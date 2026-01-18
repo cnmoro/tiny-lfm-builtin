@@ -1,6 +1,6 @@
-import lfm_rust
+import tiny_lfm_builtin
 
-model = lfm_rust.LiquidLFM("model-q4.gguf")
+model = tiny_lfm_builtin.LiquidLFM("model-q4.gguf")
 
 # 1. Test Completion (1 token)
 print("--- Completion Test ---")

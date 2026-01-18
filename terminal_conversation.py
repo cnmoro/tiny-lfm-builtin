@@ -1,10 +1,10 @@
-import lfm_rust
+import tiny_lfm_builtin
 import os
 
 # 1. Initialize
 base_path = os.path.dirname(os.path.abspath(__file__))
 weights_path = os.path.join(base_path, "model-q4.gguf")
-model = lfm_rust.LiquidLFM(weights_path)
+model = tiny_lfm_builtin.LiquidLFM(weights_path)
 
 # 2. State Management
 history = []

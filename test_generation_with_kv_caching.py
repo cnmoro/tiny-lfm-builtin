@@ -1,7 +1,7 @@
-import lfm_rust
+import tiny_lfm_builtin
 import time
 
-model = lfm_rust.LiquidLFM("model-q4.gguf")
+model = tiny_lfm_builtin.LiquidLFM("model-q4.gguf")
 
 history = [{"role": "user", "content": """
 Context:
@@ -22,7 +22,7 @@ model.save_session("my_chat")
 
 # Simulate restarting the application
 print("--- Reloading Model & Cache ---")
-model2 = lfm_rust.LiquidLFM("model-q4.gguf")
+model2 = tiny_lfm_builtin.LiquidLFM("model-q4.gguf")
 model2.load_session("my_chat")
 
 print("--- Turn 2 (Warm Start) ---")
