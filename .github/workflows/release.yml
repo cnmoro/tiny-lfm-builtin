@@ -85,20 +85,10 @@ jobs:
         with:
           python-version: '3.10'
       
-      - uses: Jimver/cuda-toolkit@v0.2.16
+      - uses: NVIDIA/cuda@v12.3.1
         with:
-          cuda: '12.1.0'
-      
-      - uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-          vsversion: 2022
-      
-      - name: Verify MSVC is available
-        run: |
-          where cl
-          cl
-        shell: cmd
+          cuda-version: '12.3.1'
+          msvc: '2022'
       
       - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }})
         uses: PyO3/maturin-action@v1
@@ -106,7 +96,6 @@ jobs:
           target: x64
           args: --release --out dist --features cuda
           sccache: 'true'
-          extra_args: --nvcc-extra-args="-allow-unsupported-compiler"
         env:
           CUDA_COMPUTE_CAP: ${{ matrix.cuda_compute_cap }}
       
