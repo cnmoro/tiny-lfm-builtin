@@ -48,37 +48,54 @@ jobs:
           manylinux: auto
           docker-image: messense/manylinux2014-cuda:12.1
           
+          # FIX: Robustly locate nvcc by searching the entire filesystem if needed.
+          # We assume nothing about standard paths.
           before-script-linux: |
-            set -e
-            echo "Locating CUDA..."
+            set -ex  # Enable verbose logging and exit on error
             
-            # Check standard location first, otherwise search for it
-            if [ -d "/usr/local/cuda" ]; then
-                CUDA_ROOT=/usr/local/cuda
-            else
-                NVCC_PATH=$(find /usr/local -name nvcc -type f -print -quit)
-                if [ -z "$NVCC_PATH" ]; then
-                    echo "Error: nvcc not found."
-                    exit 1
-                fi
-                CUDA_ROOT=$(dirname $(dirname "$NVCC_PATH"))
+            echo "Searching for nvcc..."
+            
+            # 1. Try to find nvcc in common locations first (fast), then search root (slow)
+            NVCC_PATH=$(find /usr/local /opt -name nvcc -type f -print -quit 2>/dev/null || true)
+            if [ -z "$NVCC_PATH" ]; then
+              echo "nvcc not in /usr/local or /opt, searching / ..."
+              NVCC_PATH=$(find / -name nvcc -type f -print -quit 2>/dev/null || true)
             fi
             
-            echo "CUDA Root found at: $CUDA_ROOT"
+            if [ -z "$NVCC_PATH" ]; then
+              echo "FATAL: nvcc executable not found in Docker image."
+              # List typical directories to help debug if it fails again
+              ls -F /usr/local/ || true
+              exit 1
+            fi
             
-            # 1. Symlink nvcc to /usr/bin so it is found in the PATH automatically
-            ln -sf "$CUDA_ROOT/bin/nvcc" /usr/bin/nvcc
+            echo "Found nvcc at: $NVCC_PATH"
             
-            # 2. Add library paths to ld.so.conf so the linker finds libcuda.so
-            # We add 'stubs' first to allow linking without a GPU driver
-            echo "$CUDA_ROOT/lib64/stubs" > /etc/ld.so.conf.d/cuda.conf
-            echo "$CUDA_ROOT/lib64" >> /etc/ld.so.conf.d/cuda.conf
+            # 2. Determine CUDA root directory from nvcc location
+            # If nvcc is /usr/local/cuda-12.1/bin/nvcc, root is /usr/local/cuda-12.1
+            CUDA_BIN_DIR=$(dirname "$NVCC_PATH")
+            CUDA_ROOT_DIR=$(dirname "$CUDA_BIN_DIR")
+            echo "Detected CUDA_ROOT: $CUDA_ROOT_DIR"
+            
+            # 3. Create symlinks to ensure standard tools find them
+            # Link nvcc to /usr/bin so it is in the default PATH
+            ln -sf "$NVCC_PATH" /usr/bin/nvcc
+            
+            # Link the detected root to /usr/local/cuda so CUDA_PATH env var works
+            mkdir -p /usr/local
+            ln -sf "$CUDA_ROOT_DIR" /usr/local/cuda
+            
+            # 4. Configure Linker (ldconfig)
+            # This is critical for linking against libcuda.so without a GPU driver
+            echo "$CUDA_ROOT_DIR/lib64/stubs" > /etc/ld.so.conf.d/cuda-stubs.conf
+            echo "$CUDA_ROOT_DIR/lib64" >> /etc/ld.so.conf.d/cuda-stubs.conf
             ldconfig
             
-            # Debug output
+            # Verify
             nvcc --version
             
-          # Set helper variables for crates that use them, but DO NOT set PATH.
+          # Pass standard env vars, relying on the symlinks we just created.
+          # We DO NOT set PATH, preserving the devtoolset (cc/gcc) environment.
           docker-options: >-
             -e CUDA_PATH=/usr/local/cuda
             -e CUDA_ROOT=/usr/local/cuda
