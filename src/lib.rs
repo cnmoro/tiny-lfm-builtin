@@ -84,7 +84,6 @@ struct ChatMessage { role: String, content: String }
 
 impl LiquidLFM {
     // Helper to run inference on a batch of token vectors using Rayon
-    // Inside impl LiquidLFM
     fn run_parallel_inference(&self, inputs: Vec<Vec<u32>>, max_new_tokens: usize) -> Result<Vec<String>, candle_core::Error> {
         let model = &self.model;
         let device = &self.device;
@@ -96,7 +95,6 @@ impl LiquidLFM {
             let mut current_pos = 0;
 
             // Prefill: Process all tokens except the last one
-            // This sets up the KV cache and Conv state up to the second-to-last token.
             let prefill_len = tokens.len().saturating_sub(1);
             if prefill_len > 0 {
                 for chunk in tokens[..prefill_len].chunks(512) {
@@ -111,8 +109,6 @@ impl LiquidLFM {
                 let last_token = *tokens.last().unwrap();
                 let input = Tensor::new(&[last_token], device)?.unsqueeze(0)?;
                 
-                // Pass current_pos (not current_pos - 1) because we are processing the 
-                // token at current_pos that hasn't been processed by prefill yet.
                 let logits = model.forward(&input, current_pos, &mut local_cache)?;
                 let logits = logits.squeeze(0)?.squeeze(0)?;
                 
@@ -131,7 +127,8 @@ impl LiquidLFM {
 #[pymethods]
 impl LiquidLFM {
     #[new]
-    fn new(model_path: String) -> PyResult<Self> {
+    #[pyo3(signature = (model_path, device=None))]
+    fn new(model_path: String, device: Option<String>) -> PyResult<Self> {
         INIT_RAYON.call_once(|| {
             let physical_cores = num_cpus::get_physical();
             let _ = rayon::ThreadPoolBuilder::new()
@@ -139,16 +136,40 @@ impl LiquidLFM {
                 .build_global();
         });
 
-        // Device Selection Priority: CUDA -> Metal -> CPU
-        let device = if candle_core::utils::cuda_is_available() {
-            println!("Rust: CUDA detected. Using GPU.");
-            Device::new_cuda(0).unwrap_or(Device::Cpu)
-        } else if candle_core::utils::metal_is_available() {
-            println!("Rust: Metal detected. Using GPU.");
-            Device::new_metal(0).unwrap_or(Device::Cpu)
-        } else {
-            println!("Rust: Using CPU.");
-            Device::Cpu
+        let device = match device.as_deref() {
+            Some("cpu") => {
+                println!("Rust: User requested CPU.");
+                Device::Cpu
+            },
+            Some("cuda") => {
+                 if candle_core::utils::cuda_is_available() {
+                    println!("Rust: User requested CUDA.");
+                    Device::new_cuda(0).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
+                 } else {
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("CUDA requested but not available."));
+                 }
+            },
+            Some("metal") => {
+                 if candle_core::utils::metal_is_available() {
+                    println!("Rust: User requested Metal.");
+                    Device::new_metal(0).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?
+                 } else {
+                    return Err(PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("Metal requested but not available."));
+                 }
+            },
+            _ => {
+                // Auto-detection
+                if candle_core::utils::cuda_is_available() {
+                    println!("Rust: CUDA detected. Using GPU.");
+                    Device::new_cuda(0).unwrap_or(Device::Cpu)
+                } else if candle_core::utils::metal_is_available() {
+                    println!("Rust: Metal detected. Using GPU.");
+                    Device::new_metal(0).unwrap_or(Device::Cpu)
+                } else {
+                    println!("Rust: Using CPU.");
+                    Device::Cpu
+                }
+            }
         };
 
         let model = Lfm2Model::load(&model_path, &device)
@@ -254,6 +275,9 @@ impl LiquidLFM {
                 formatted_prompt.push_str("<think>\n</think>\n");
             }
 
+            // print the raw prompt
+            println!("Raw prompt:\n{}", formatted_prompt);
+
             // Use `true` to ensure the BOS token ID (<|startoftext|>) is added automatically.
             let encoding = self.tokenizer.encode(formatted_prompt, true)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
@@ -267,7 +291,6 @@ impl LiquidLFM {
 
     // --- ASYNC/STATELESS API (GIL Released) ---
 
-    // Inside impl LiquidLFM
     #[pyo3(signature = (messages_py, max_new_tokens=None, ignore_thinking=false))]
     fn chat_stateless(&self, py: Python<'_>, messages_py: Vec<HashMap<String, String>>, max_new_tokens: Option<usize>, ignore_thinking: bool) -> PyResult<String> {
         let max_tokens = max_new_tokens.unwrap_or(64);
@@ -291,6 +314,9 @@ impl LiquidLFM {
         if ignore_thinking {
             formatted_prompt.push_str("<think>\n</think>\n");
         }
+
+        // print the raw prompt
+        println!("Raw prompt:\n{}", formatted_prompt);
 
         // Use `true` to ensure the BOS token ID (<|startoftext|>) is added automatically.
         let encoding = self.tokenizer.encode(formatted_prompt, true).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;

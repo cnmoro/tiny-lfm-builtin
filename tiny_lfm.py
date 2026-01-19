@@ -10,6 +10,7 @@ class ModelType(str, Enum):
     M350 = "350M"
     B1_2 = "1.2B"
     B2_6 = "2.6B"
+    B8_A1 = "8B-A1"
 
 # Model Registry
 MODEL_REGISTRY = {
@@ -25,15 +26,20 @@ MODEL_REGISTRY = {
         "url": "https://huggingface.co/cnmoro/LFM-Q4-GGUFS/resolve/main/lfm2-2.6b-q4.gguf",
         "filename": "lfm2-2.6b-q4.gguf"
     },
+    ModelType.B8_A1: {
+        "url": "https://huggingface.co/cnmoro/LFM-Q4-GGUFS/resolve/main/lfm2-8b-a1b-q4.gguf",
+        "filename": "lfm2-8b-a1b-q4.gguf"
+    }
 }
 
 class TinyLFM:
-    def __init__(self, model_size: Union[str, ModelType] = "350M"):
+    def __init__(self, model_size: Union[str, ModelType] = "350M", device: Optional[str] = None):
         """
         Initialize the Liquid LFM model.
         
         Args:
-            model_size (str): One of "350M", "1.2B", "2.6B".
+            model_size (str): One of "350M", "1.2B", "2.6B", "8B-A1B".
+            device (str): "cpu", "cuda", or "metal". If None, auto-detects.
         """
         # Validate model selection
         if isinstance(model_size, str):
@@ -57,7 +63,7 @@ class TinyLFM:
              raise FileNotFoundError(f"Model file not found at: {model_path}")
 
         print(f"Loading LFM Engine ({model_size.value}) from {model_path}...")
-        self._engine = tiny_lfm_builtin.LiquidLFM(model_path)
+        self._engine = tiny_lfm_builtin.LiquidLFM(model_path, device)
         print("Engine loaded.")
 
     def _download_model(self, dest_path: str):
@@ -222,7 +228,7 @@ if __name__ == "__main__":
     try:
         # Example Usage
         print("Initializing 2.6B Model...")
-        lfm = TinyLFM("2.6B")
+        lfm = TinyLFM("1.2B")
         
         print("\n1. Testing standard chat...")
         for t in lfm.chat([{"role": "user", "content": "Hi!"}]):
@@ -231,10 +237,10 @@ if __name__ == "__main__":
         
         print("2. Testing Batch Chat...")
         batch_inputs = [
-            [{"role": "user", "content": "1+1="}],
+            # [{"role": "user", "content": "1+1="}],
             [{"role": "user", "content": "Capital of Spain?"}]
         ]
-        results = lfm.batch_chat(batch_inputs, max_tokens=10)
+        results = lfm.batch_chat(batch_inputs, max_tokens=80)
         for r in results:
             print(f"Result: {r[-50:].strip()}...")
 
