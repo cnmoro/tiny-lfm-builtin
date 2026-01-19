@@ -43,17 +43,18 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
-          # Enable cuda feature in Cargo.toml
+          # Enable cuda feature
           args: --release --out dist --features cuda
           sccache: 'true'
           manylinux: auto
-          # This image contains CUDA 12.1 toolkit and NVCC
+          # This image handles the environment setup for you
           docker-image: messense/manylinux2014-cuda:12.1
         env:
-          # cudarc needs to find nvcc and cuda libraries
+          # cudarc uses these to find libraries, but DO NOT override PATH
           CUDA_PATH: /usr/local/cuda
           CUDA_ROOT: /usr/local/cuda
-          PATH: /usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          # If necessary, you can explicitly point to nvcc, though usually not needed if PATH is left alone:
+          # NVCC: /usr/local/cuda/bin/nvcc
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
