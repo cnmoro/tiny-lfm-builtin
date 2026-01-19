@@ -37,9 +37,27 @@ jobs:
 
   linux-cuda:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # RTX 20xx (Turing)
+          - cuda_compute_cap: '75'
+            arch_name: 'turing'
+          # RTX 30xx, A100 (Ampere)
+          - cuda_compute_cap: '80'
+            arch_name: 'ampere'
+          # RTX 30xx consumer (Ampere)
+          - cuda_compute_cap: '86'
+            arch_name: 'ampere-consumer'
+          # RTX 40xx (Ada Lovelace)
+          - cuda_compute_cap: '89'
+            arch_name: 'ada'
+          # H100 (Hopper)
+          - cuda_compute_cap: '90'
+            arch_name: 'hopper'
     steps:
       - uses: actions/checkout@v4
-      - name: Build CUDA wheels
+      - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }} - ${{ matrix.arch_name }})
         uses: PyO3/maturin-action@v1
         with:
           target: x86_64
@@ -49,11 +67,38 @@ jobs:
           container: sameli/manylinux2014_x86_64_cuda_12.3
           before-script-linux: |
             nvcc --version
-          docker-options: -e CUDA_COMPUTE_CAP=80
+          docker-options: -e CUDA_COMPUTE_CAP=${{ matrix.cuda_compute_cap }}
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-linux-cuda
+          name: wheels-linux-cuda-${{ matrix.arch_name }}
+          path: dist
+
+  windows-cuda:
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        cuda_compute_cap: ['80', '86', '89']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - uses: Jimver/cuda-toolkit@v0.2.16
+        with:
+          cuda: '12.1.0'
+      - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }})
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x64
+          args: --release --out dist --features cuda
+          sccache: 'true'
+        env:
+          CUDA_COMPUTE_CAP: ${{ matrix.cuda_compute_cap }}
+      - name: Upload CUDA wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-windows-cuda-sm${{ matrix.cuda_compute_cap }}
           path: dist
 
   windows:
@@ -107,7 +152,7 @@ jobs:
 
   pypi-publish:
     name: Publish to PyPI
-    needs: [linux, linux-cuda, windows, macos]
+    needs: [linux, linux-cuda, windows, windows-cuda, macos]
     runs-on: ubuntu-latest
     environment:
       name: pypi

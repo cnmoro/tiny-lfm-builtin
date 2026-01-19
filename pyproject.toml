@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "tiny_lfm_builtin"
 description = "LiquidAI-LFM2-350M rust inference engine embedded in a python package"
-version = "0.0.2"
+version = "0.0.3"
 authors = [
   { name="Carlo Moro", email="cnmoro@gmail.com" },
 ]
