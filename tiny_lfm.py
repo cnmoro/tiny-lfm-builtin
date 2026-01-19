@@ -1,23 +1,54 @@
-import os, sys
-import tiny_lfm_builtin
+import os, sys, tiny_lfm_builtin
 from typing import List, Dict, Optional, Union, Generator
 import urllib.request
+from enum import Enum
 
 # Configuration
-MODEL_URL = "https://huggingface.co/cnmoro/LFM2-350M-Q4_0-GGUF/resolve/main/model-q4.gguf"
 CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "tiny_lfm_builtin")
-MODEL_FILENAME = "model-q4.gguf"
+
+class ModelType(str, Enum):
+    M350 = "350M"
+    B1_2 = "1.2B"
+    B2_6 = "2.6B"
+
+# Model Registry
+MODEL_REGISTRY = {
+    ModelType.M350: {
+        "url": "https://huggingface.co/cnmoro/LFM-Q4-GGUFS/resolve/main/lfm2-350m-q4.gguf",
+        "filename": "lfm2-350m-q4.gguf"
+    },
+    ModelType.B1_2: {
+        "url": "https://huggingface.co/cnmoro/LFM-Q4-GGUFS/resolve/main/lfm2.5-1.2b-q4.gguf",
+        "filename": "lfm2.5-1.2b-q4.gguf"
+    },
+    ModelType.B2_6: {
+        "url": "https://huggingface.co/cnmoro/LFM-Q4-GGUFS/resolve/main/lfm2-2.6b-q4.gguf",
+        "filename": "lfm2-2.6b-q4.gguf"
+    },
+}
 
 class TinyLFM:
-    def __init__(self):
+    def __init__(self, model_size: Union[str, ModelType] = "350M"):
         """
         Initialize the Liquid LFM model.
         
         Args:
-            model_path (str, optional): Path to GGUF. If None, downloads/uses the cached model.
+            model_size (str): One of "350M", "1.2B", "2.6B".
         """
+        # Validate model selection
+        if isinstance(model_size, str):
+            try:
+                model_size = ModelType(model_size)
+            except ValueError:
+                valid = [m.value for m in ModelType]
+                raise ValueError(f"Invalid model_size '{model_size}'. Valid options: {valid}")
+        
+        config = MODEL_REGISTRY[model_size]
+        self.model_filename = config["filename"]
+        self.model_url = config["url"]
+        
         os.makedirs(CACHE_DIR, exist_ok=True)
-        model_path = os.path.join(CACHE_DIR, MODEL_FILENAME)
+        model_path = os.path.join(CACHE_DIR, self.model_filename)
         
         if not os.path.exists(model_path):
             self._download_model(model_path)
@@ -25,21 +56,22 @@ class TinyLFM:
         if not os.path.exists(model_path):
              raise FileNotFoundError(f"Model file not found at: {model_path}")
 
-        print(f"Loading LFM Engine from {model_path}...")
+        print(f"Loading LFM Engine ({model_size.value}) from {model_path}...")
         self._engine = tiny_lfm_builtin.LiquidLFM(model_path)
-        print("Engine loaded. KV Cache is active.")
+        print("Engine loaded.")
 
     def _download_model(self, dest_path: str):
         print(f"Model not found locally.")
-        print(f"Downloading LFM2-350M (approx 200MB) to {dest_path}...")
+        print(f"Downloading {self.model_filename} to {dest_path}...")
         
         def _progress(count, block_size, total_size):
-            percent = int(count * block_size * 100 / total_size)
-            sys.stdout.write(f"\rDownload: {percent}%")
-            sys.stdout.flush()
+            if total_size > 0:
+                percent = int(count * block_size * 100 / total_size)
+                sys.stdout.write(f"\rDownload: {percent}%")
+                sys.stdout.flush()
 
         try:
-            urllib.request.urlretrieve(MODEL_URL, dest_path, reporthook=_progress)
+            urllib.request.urlretrieve(self.model_url, dest_path, reporthook=_progress)
             print("\nDownload complete.")
         except KeyboardInterrupt:
             print("\nDownload cancelled.")
@@ -49,21 +81,21 @@ class TinyLFM:
             print(f"\nError downloading model: {e}")
             if os.path.exists(dest_path): os.remove(dest_path)
             raise e
-        
+    
+    # --- Stateful Methods (Interactive Chat / Context Aware) ---
+
     def chat(self,
              messages: List[Dict[str, str]], 
              max_tokens: int = None, 
-             stream: bool = True) -> Union[str, Generator[str, None, None]]:
+             stream: bool = True,
+             ignore_thinking: bool = False) -> Union[str, Generator[str, None, None]]:
         """
-        Regular chat generation. Maintains history automatically via the input list.
-        KV Caching is handled automatically by the Rust engine based on prefix matching.
-
-        Args:
-            messages: List of dicts, e.g. [{"role": "user", "content": "..."}]
-            max_tokens: Maximum new tokens to generate.
-            stream: If True, returns a generator. If False, returns the full string.
+        Standard interactive chat. 
+        Maintains KV cache state based on the prefix of the conversation history.
+        Best for single-user sessions or CLI chat bots.
         """
-        streamer = self._engine.generate(messages, max_tokens) if max_tokens else self._engine.generate(messages)
+        _igthk = True if (ignore_thinking == False and "2.6b" in self.model_filename.lower()) else ignore_thinking
+        streamer = self._engine.generate(messages, max_tokens, _igthk)
         
         if stream:
             return self._stream_wrapper(streamer)
@@ -79,40 +111,25 @@ class TinyLFM:
                    stream: bool = True) -> Union[str, Generator[str, None, None]]:
         """
         Raw completion with 'Prompt Hacking' capabilities.
-        Allows pre-filling the assistant's response to guide output (e.g., forcing JSON).
-
-        Args:
-            prompt: The user's input/query.
-            system_prompt: Optional system instruction.
-            assistant_start: Text to pre-fill the assistant's response with. 
-                             The model will continue generating from this point.
-            stop: A string or list of strings that should stop generation.
-            max_tokens: Max new tokens.
-            stream: Yield tokens as they arrive.
+        Uses the stateful KV cache.
         """
-        # 1. Construct the raw prompt manually to allow template hacking
         full_prompt = ""
-        
         if system_prompt:
             full_prompt += f"<|im_start|>system\n{system_prompt}<|im_end|>\n"
-            
         full_prompt += f"<|im_start|>user\n{prompt}<|im_end|>\n"
         full_prompt += "<|im_start|>assistant\n"
         
+        # If model is 2.6B then add <think>\n</think> to assistant msg prefix before anything else
+        # (This is manual handling for completion since completion bypasses 'generate')
+        if "2.6b" in self.model_filename.lower():
+            full_prompt += "<think>\n</think>\n"
+
         if assistant_start:
-            # We append the pre-fill without an EOS token, so the model continues it
             full_prompt += assistant_start
 
-        # 2. Call Rust Engine
-        # The engine will automatically check if 'full_prompt' shares a prefix 
-        # with the previous generation and reuse the KV cache.
-        streamer = self._engine.completion(full_prompt, max_tokens) if max_tokens else self._engine.completion(full_prompt)
+        streamer = self._engine.completion(full_prompt, max_tokens)
 
-        # 3. Handle Python-side stop tokens
-        stop_sequences = []
-        if stop:
-            stop_sequences = [stop] if isinstance(stop, str) else stop
-            
+        stop_sequences = [stop] if isinstance(stop, str) else (stop or [])
         generator = self._stop_aware_iterator(streamer, stop_sequences)
 
         if stream:
@@ -120,66 +137,110 @@ class TinyLFM:
         else:
             return "".join(list(generator))
 
+    def clear_session(self):
+        """
+        Manually clears the stateful KV cache and session history to free RAM.
+        Use this when starting a completely unrelated conversation in 'chat' or 'completion' mode.
+        """
+        self._engine.clear_session()
+
     def save_cache(self, session_name: str):
-        """Saves the current KV cache to disk."""
+        """Saves the current stateful KV cache to disk."""
         self._engine.save_session(session_name)
 
     def load_cache(self, session_name: str):
-        """Loads a KV cache from disk."""
+        """Loads a stateful KV cache from disk."""
         self._engine.load_session(session_name)
 
+    # --- Stateless / High-Throughput Methods ---
+
+    def chat_stateless(self, 
+                       messages: List[Dict[str, str]], 
+                       max_tokens: int = None,
+                       ignore_thinking: bool = False) -> str:
+        """
+        Thread-safe, stateless chat. 
+        Releases the Python GIL during inference.
+        
+        Use this method when running a web server (e.g., FastAPI) to handle 
+        multiple concurrent requests in separate threads without blocking.
+        
+        Returns:
+            str: The full response string (streaming not supported in stateless mode yet).
+        """
+        _igthk = True if (ignore_thinking == False and "2.6b" in self.model_filename.lower()) else ignore_thinking
+        return self._engine.chat_stateless(messages, max_tokens, _igthk)
+
+    def batch_chat(self, 
+                   conversations: List[List[Dict[str, str]]], 
+                   max_tokens: int = None,
+                   ignore_thinking: bool = False) -> List[str]:
+        """
+        Process multiple chat conversations in parallel using CPU multithreading (Rayon).
+        Each conversation runs in isolation with its own temporary KV cache.
+        
+        Args:
+            conversations: A list of chat histories (list of lists of dicts).
+        
+        Returns:
+            List[str]: A list of full text responses (including the prompt).
+        """
+        _igthk = True if (ignore_thinking == False and "2.6b" in self.model_filename.lower()) else ignore_thinking
+        return self._engine.batch_chat(conversations, max_tokens, _igthk)
+
+    def batch_completion(self, 
+                         prompts: List[str], 
+                         max_tokens: int = None) -> List[str]:
+        """
+        Process multiple raw completions in parallel using CPU multithreading (Rayon).
+        
+        Args:
+            prompts: A list of string prompts.
+            
+        Returns:
+            List[str]: A list of full text responses (including the prompt).
+        """
+        return self._engine.batch_completion(prompts, max_tokens)
+
+    # --- Helpers ---
+
     def _stream_wrapper(self, rust_streamer) -> Generator[str, None, None]:
-        """Simple wrapper to yield from Rust streamer."""
         for token in rust_streamer:
             yield token
 
     def _stop_aware_iterator(self, rust_streamer, stop_sequences: List[str]) -> Generator[str, None, None]:
-        """
-        Wraps the Rust streamer to implement custom stop sequences in Python.
-        Note: The Rust engine handles standard EOS (<|im_end|>) internally.
-        """
         generated_text = ""
-        
         for token in rust_streamer:
             yield token
             generated_text += token
-            
-            # Check for stop sequences
             if stop_sequences:
                 for seq in stop_sequences:
                     if seq in generated_text:
-                        return # Stop generation immediately
+                        return
 
 if __name__ == "__main__":
     try:
-        lfm = TinyLFM()
+        # Example Usage
+        print("Initializing 2.6B Model...")
+        lfm = TinyLFM("2.6B")
         
-        print("\n--- 1. Regular Chat Streaming ---")
-        history = [{"role": "user", "content": "What is 2+2?"}]
-        for token in lfm.chat(history):
-            print(token, end="", flush=True)
+        print("\n1. Testing standard chat...")
+        for t in lfm.chat([{"role": "user", "content": "Hi!"}]):
+            print(t, end="", flush=True)
         print("\n")
+        
+        print("2. Testing Batch Chat...")
+        batch_inputs = [
+            [{"role": "user", "content": "1+1="}],
+            [{"role": "user", "content": "Capital of Spain?"}]
+        ]
+        results = lfm.batch_chat(batch_inputs, max_tokens=10)
+        for r in results:
+            print(f"Result: {r[-50:].strip()}...")
 
-        print("--- 2. Prompt Hacking (JSON Mode) ---")
-        # Scenario: We want to extract keywords as a JSON list.
-        
-        sys_p = "You are a data extraction tool. Output only JSON."
-        user_p = "Extract keywords from: 'Liquid AI released LFM2, a powerful edge model.'"
-        pre_fill = "Sure, here are the keywords in JSON format:\n```json\n[\n"
-                
-        stream = lfm.completion(
-            prompt=user_p,
-            system_prompt=sys_p,
-            assistant_start=pre_fill,
-            stop="]", # Stop when it tries to close the block
-            stream=True
-        )
-        
-        for token in stream:
-            print(token, end="", flush=True)
-        print("\n")
-        
-    except FileNotFoundError as e:
-        print(e)
+        print("\n3. Testing Resource Cleanup...")
+        lfm.clear_session()
+        print("Session cleared.")
+
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"Error: {e}")

@@ -2,7 +2,6 @@ use candle_core::quantized::{gguf_file, QMatMul, QTensor};
 use candle_core::{DType, Device, IndexOp, Module, Result, Tensor, D};
 use candle_nn::{Embedding, Linear};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::fs::File;
 use std::io::{Read, Seek};
 
@@ -43,11 +42,9 @@ impl Config {
         let hidden_size = get_usize(&["lfm2.embedding_length", "llama.embedding_length", "hidden_size"])?;
         let num_attention_heads = get_usize(&["lfm2.attention.head_count", "llama.attention.head_count", "num_attention_heads"])?;
         let num_hidden_layers = get_usize(&["lfm2.block_count", "llama.block_count", "num_hidden_layers"])?;
-        // Default to attention_heads if KV missing (common cause of error, fixed in Attention::new via auto-detect)
         let num_key_value_heads = get_usize(&["lfm2.attention.head_count_kv", "llama.attention.head_count_kv", "num_key_value_heads"]).unwrap_or(num_attention_heads);
         let norm_eps = get_f64(&["lfm2.attention.layer_norm_rms_epsilon", "llama.attention.layer_norm_rms_epsilon", "norm_eps"])?;
         let rope_theta = get_f64(&["lfm2.rope.freq_base", "llama.rope.freq_base", "rope_theta"]).unwrap_or(10000.0);
-        
         let conv_l_cache = get_usize(&["lfm2.conv_l_cache", "conv_L_cache"]).unwrap_or(4);
 
         let layer_types = match get_val(&["lfm2.layer_types", "layer_types"]) {
@@ -62,7 +59,71 @@ impl Config {
     }
 }
 
-// Struct to hold Linear layer + its output dimension (crucial for weight shape checking)
+// --- CACHE SYSTEM ---
+
+#[derive(Debug, Clone)]
+pub enum LayerState {
+    Attn { k: Tensor, v: Tensor },
+    Conv { state: Tensor },
+}
+
+pub struct LfmCache {
+    pub states: Vec<Option<LayerState>>,
+}
+
+impl LfmCache {
+    pub fn new(num_layers: usize) -> Self {
+        Self { states: vec![None; num_layers] }
+    }
+
+    pub fn get_seq_len(&self) -> usize {
+        for state in &self.states {
+            if let Some(LayerState::Attn { k, .. }) = state {
+                return k.dim(2).unwrap_or(0);
+            }
+        }
+        0
+    }
+
+    pub fn save(&self, path: &str) -> Result<()> {
+        let mut t = HashMap::new();
+        for (i, state) in self.states.iter().enumerate() {
+            match state {
+                Some(LayerState::Attn { k, v }) => {
+                    t.insert(format!("layer.{}.attn.k", i), k.clone());
+                    t.insert(format!("layer.{}.attn.v", i), v.clone());
+                }
+                Some(LayerState::Conv { state }) => {
+                    t.insert(format!("layer.{}.conv.state", i), state.clone());
+                }
+                None => {}
+            }
+        }
+        candle_core::safetensors::save(&t, path)
+    }
+
+    pub fn load(&mut self, path: &str, device: &Device) -> Result<()> {
+        let t = candle_core::safetensors::load(path, device)?;
+        // We assume the cache size matches the model size, typically handled by caller
+        for (i, state) in self.states.iter_mut().enumerate() {
+            let k_name = format!("layer.{}.attn.k", i);
+            let v_name = format!("layer.{}.attn.v", i);
+            let conv_name = format!("layer.{}.conv.state", i);
+
+            if let (Some(k), Some(v)) = (t.get(&k_name), t.get(&v_name)) {
+                *state = Some(LayerState::Attn { k: k.clone(), v: v.clone() });
+            } else if let Some(s) = t.get(&conv_name) {
+                *state = Some(LayerState::Conv { state: s.clone() });
+            } else {
+                *state = None;
+            }
+        }
+        Ok(())
+    }
+}
+
+// --- LAYERS ---
+
 struct QLinear {
     inner: QLinearInner,
     out_dim: usize,
@@ -114,9 +175,7 @@ impl Weights {
             let keys: Vec<_> = self.tensors.keys().take(10).collect();
             candle_core::Error::Msg(format!("Missing linear '{}'. Available: {:?}", name, keys))
         })?;
-
-        let out_dim = w_qt.shape().dims()[0]; // Capture output dimension
-
+        let out_dim = w_qt.shape().dims()[0];
         let inner = match w_qt.dtype() {
             candle_core::quantized::GgmlDType::F32 | candle_core::quantized::GgmlDType::F16 => {
                 QLinearInner::Standard(Linear::new(w_qt.dequantize(&self.device)?, None))
@@ -125,7 +184,6 @@ impl Weights {
         };
         Ok(QLinear { inner, out_dim })
     }
-    
     pub fn has(&self, name: &str) -> bool { self.tensors.contains_key(name) }
 }
 
@@ -178,7 +236,7 @@ struct ShortConv {
     conv_weight: Tensor, 
     conv_bias: Option<Tensor>,
     in_proj: QLinear, out_proj: QLinear, 
-    l_cache: usize, cache: Arc<Mutex<Option<Tensor>>>, 
+    l_cache: usize, 
 }
 impl ShortConv {
     fn new(cfg: &Config, weights: &mut Weights, prefix: &str, gguf: bool) -> Result<Self> {
@@ -190,20 +248,18 @@ impl ShortConv {
         
         let mut conv_w = weights.pop_tensor(&w)?;
         if conv_w.rank() == 2 { conv_w = conv_w.unsqueeze(1)?; }
-        let l_cache = conv_w.dim(2).unwrap_or(cfg.conv_l_cache); // Auto-detect Kernel Size
+        let l_cache = conv_w.dim(2).unwrap_or(cfg.conv_l_cache); 
         let conv_bias = if weights.has(&b) { Some(weights.pop_tensor(&b)?) } else { None };
 
         Ok(Self {
             conv_weight: conv_w, conv_bias,
             in_proj: weights.pop_linear(&in_n)?,
             out_proj: weights.pop_linear(&out_n)?,
-            l_cache, cache: Arc::new(Mutex::new(None)),
+            l_cache, 
         })
     }
     
-    fn get_state(&self) -> Option<Tensor> { self.cache.lock().unwrap().clone() }
-    fn set_state(&self, state: Tensor) { *self.cache.lock().unwrap() = Some(state); }
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+    fn forward(&self, x: &Tensor, state: &mut Option<LayerState>) -> Result<Tensor> {
         let (b_sz, seq_len, _) = x.dims3()?;
         let bcx = self.in_proj.forward(x)?;
         let chunks = bcx.chunk(3, 2)?;
@@ -216,10 +272,15 @@ impl ShortConv {
             let padded = Tensor::cat(&[&padding, &bx_t], 2)?;
             padded.conv1d(&self.conv_weight, 0, 1, 1, self.conv_weight.dim(0)?)?
         } else {
-            let mut cache = self.cache.lock().unwrap();
-            let state = match cache.as_ref() { Some(s) => s.clone(), None => Tensor::zeros((b_sz, bx_t.dim(1)?, self.l_cache), bx.dtype(), bx.device())? };
-            let new_state = Tensor::cat(&[&state.i((.., .., 1..))?, &bx_t], 2)?;
-            *cache = Some(new_state.clone());
+            let current_state = match state {
+                Some(LayerState::Conv { state: s }) => s.clone(),
+                _ => Tensor::zeros((b_sz, bx_t.dim(1)?, self.l_cache), bx.dtype(), bx.device())?
+            };
+            
+            // Shift state
+            let new_state = Tensor::cat(&[&current_state.i((.., .., 1..))?, &bx_t], 2)?;
+            *state = Some(LayerState::Conv { state: new_state.clone() });
+            
             let w = self.conv_weight.reshape((1, (), self.l_cache))?; 
             new_state.broadcast_mul(&w)?.sum(2)?.unsqueeze(2)?
         };
@@ -234,7 +295,6 @@ struct Attention {
     q_proj: QLinear, k_proj: QLinear, v_proj: QLinear, o_proj: QLinear,
     q_norm: RmsNorm, k_norm: RmsNorm,
     n_heads: usize, n_kv_heads: usize, head_dim: usize, rope: RotaryEmbedding,
-    kv_cache: Arc<Mutex<Option<(Tensor, Tensor)>>>,
 }
 impl Attention {
     fn new(cfg: &Config, weights: &mut Weights, prefix: &str, device: &Device, gguf: bool) -> Result<Self> {
@@ -250,9 +310,6 @@ impl Attention {
         let v_proj = weights.pop_linear(&v)?;
         let o_proj = weights.pop_linear(&o)?;
 
-        // AUTO-DETECT KV HEADS
-        // If metadata is wrong (common in GGUF), we check the actual weight shape.
-        // k_proj output dim = n_kv_heads * head_dim
         let mut n_kv_heads = cfg.num_key_value_heads;
         let inferred_kv = k_proj.out_dim / cfg.head_dim;
         if inferred_kv != n_kv_heads && k_proj.out_dim % cfg.head_dim == 0 {
@@ -267,39 +324,36 @@ impl Attention {
             q_norm: RmsNorm::new(weights.pop_tensor(&qn)?, cfg.norm_eps),
             k_norm: RmsNorm::new(weights.pop_tensor(&kn)?, cfg.norm_eps),
             n_heads: cfg.num_attention_heads, n_kv_heads, head_dim: cfg.head_dim, rope,
-            kv_cache: Arc::new(Mutex::new(None)),
         })
     }
-    fn get_state(&self) -> Option<(Tensor, Tensor)> { self.kv_cache.lock().unwrap().clone() }
-    fn set_state(&self, k: Tensor, v: Tensor) { *self.kv_cache.lock().unwrap() = Some((k, v)); }
-    fn forward(&self, x: &Tensor, pos: usize) -> Result<Tensor> {
+    
+    fn forward(&self, x: &Tensor, pos: usize, state: &mut Option<LayerState>) -> Result<Tensor> {
         let (b_sz, seq_len, _) = x.dims3()?;
-        
-        // Ensure input is contiguous before projection (Helps AVX prefetching)
         let x = x.contiguous()?; 
 
         let q = self.q_norm.forward(&self.q_proj.forward(&x)?.reshape((b_sz, seq_len, self.n_heads, self.head_dim))?.transpose(1, 2)?)?;
         let k = self.k_norm.forward(&self.k_proj.forward(&x)?.reshape((b_sz, seq_len, self.n_kv_heads, self.head_dim))?.transpose(1, 2)?)?;
         let v = self.v_proj.forward(&x)?.reshape((b_sz, seq_len, self.n_kv_heads, self.head_dim))?.transpose(1, 2)?;
 
-        let q = self.rope.apply(&q, pos)?.contiguous()?; // Force contiguous after rope
+        let q = self.rope.apply(&q, pos)?.contiguous()?;
         let k = self.rope.apply(&k, pos)?.contiguous()?;
 
-        let (k, v) = {
-            let mut cache = self.kv_cache.lock().unwrap();
-            match cache.as_ref() {
-                Some((pk, pv)) => { 
-                    let nk = Tensor::cat(&[pk, &k], 2)?.contiguous()?; // Force contiguous KV cache
-                    let nv = Tensor::cat(&[pv, &v], 2)?.contiguous()?;
-                    *cache = Some((nk.clone(), nv.clone()));
-                    (nk, nv)
-                }
-                None => {
-                    *cache = Some((k.clone(), v.clone()));
-                    (k, v)
-                }
+        let (k, v) = match state {
+            Some(LayerState::Attn { k: pk, v: pv }) => { 
+                // pk and pv are &mut Tensor because state is &mut.
+                // &k and &v are &Tensor.
+                // We coerce pk to &Tensor via &*pk.
+                let nk = Tensor::cat(&[&*pk, &k], 2)?.contiguous()?; 
+                let nv = Tensor::cat(&[&*pv, &v], 2)?.contiguous()?;
+                *state = Some(LayerState::Attn { k: nk.clone(), v: nv.clone() });
+                (nk, nv)
+            }
+            _ => {
+                *state = Some(LayerState::Attn { k: k.clone(), v: v.clone() });
+                (k, v)
             }
         };
+
         let n_rep = self.n_heads / self.n_kv_heads;
         let k = if n_rep > 1 { k.repeat((1, 1, n_rep, 1))?.reshape((b_sz, self.n_heads, k.dim(2)?, self.head_dim))? } else { k };
         let v = if n_rep > 1 { v.repeat((1, 1, n_rep, 1))?.reshape((b_sz, self.n_heads, v.dim(2)?, self.head_dim))? } else { v };
@@ -365,32 +419,26 @@ impl Lfm2Model {
         let lm_head = if weights.has("lm_head.weight") || weights.has("output.weight") {
             weights.pop_linear(if use_gguf { "output.weight" } else { "lm_head.weight" })?
         } else {
-            // Re-use embed if head is tied (Standard LLaMA behavior)
             QLinear { inner: QLinearInner::Standard(Linear::new(embed_w, None)), out_dim: cfg.hidden_size }
         };
 
         Ok(Self { embed, layers, final_norm, lm_head })
     }
-    // ... rest same ...
-    pub fn reset_internal_state(&self) { for (l, _, _, _) in &self.layers { match l { Layer::Attn(a) => *a.kv_cache.lock().unwrap() = None, Layer::Conv(c) => *c.cache.lock().unwrap() = None } } }
-    pub fn get_seq_len(&self) -> usize { for (l, _, _, _) in &self.layers { if let Layer::Attn(a) = l { if let Some((k, _)) = &*a.kv_cache.lock().unwrap() { return k.dim(2).unwrap_or(0); } } } 0 }
-    pub fn save_state(&self, path: &str) -> Result<()> {
-        let mut t = HashMap::new();
-        for (i, (l, _, _, _)) in self.layers.iter().enumerate() { match l { Layer::Attn(a) => if let Some((k, v)) = a.get_state() { t.insert(format!("layer.{}.attn.k", i), k); t.insert(format!("layer.{}.attn.v", i), v); }, Layer::Conv(c) => if let Some(s) = c.get_state() { t.insert(format!("layer.{}.conv.state", i), s); } } }
-        candle_core::safetensors::save(&t, path)
-    }
-    pub fn load_state(&self, path: &str, device: &Device) -> Result<()> {
-        let t = candle_core::safetensors::load(path, device)?;
-        self.reset_internal_state();
-        for (i, (l, _, _, _)) in self.layers.iter().enumerate() { match l { Layer::Attn(a) => if let (Some(k), Some(v)) = (t.get(&format!("layer.{}.attn.k", i)), t.get(&format!("layer.{}.attn.v", i))) { a.set_state(k.clone(), v.clone()) }, Layer::Conv(c) => if let Some(s) = t.get(&format!("layer.{}.conv.state", i)) { c.set_state(s.clone()) } } }
-        Ok(())
-    }
-    pub fn forward(&self, x: &Tensor, pos: usize) -> Result<Tensor> {
+
+    pub fn num_layers(&self) -> usize { self.layers.len() }
+
+    pub fn forward(&self, x: &Tensor, pos: usize, cache: &mut LfmCache) -> Result<Tensor> {
         let mut h = self.embed.forward(x)?;
-        for (layer, op_norm, mlp, ffn_norm) in &self.layers {
+        for (i, (layer, op_norm, mlp, ffn_norm)) in self.layers.iter().enumerate() {
             let resid = h.clone();
             let norm = op_norm.forward(&h)?;
-            let out = match layer { Layer::Attn(a) => a.forward(&norm, pos)?, Layer::Conv(c) => c.forward(&norm)? };
+            
+            // Pass the mutable state corresponding to this layer
+            let out = match layer { 
+                Layer::Attn(a) => a.forward(&norm, pos, &mut cache.states[i])?, 
+                Layer::Conv(c) => c.forward(&norm, &mut cache.states[i])? 
+            };
+            
             h = (resid + out)?;
             let resid = h.clone();
             let norm = ffn_norm.forward(&h)?;

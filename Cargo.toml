@@ -1,6 +1,6 @@
 [package]
 name = "tiny_lfm_builtin"
-version = "0.0.1"
+version = "0.0.2"
 edition = "2021"
 
 [lib]
@@ -21,6 +21,11 @@ safetensors = "0.4"
 clap = { version = "4.4", features = ["derive"] }
 num_cpus = "1.0"
 rayon = "1.10"
+
+[features]
+default = []
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+mkl = ["candle-core/mkl", "candle-nn/mkl", "candle-transformers/mkl"]
 
 # MAX PERFORMANCE SETTINGS
 [profile.release]

@@ -17,11 +17,9 @@ jobs:
         target: [x86_64, x86, aarch64]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -30,14 +28,31 @@ jobs:
           sccache: 'true'
           manylinux: auto
         env:
-          # Only apply AVX2 optimizations if the target is x86_64
-          # We use shell logic to check the matrix target
           RUSTFLAGS: ${{ matrix.target == 'x86_64' && '-C target-cpu=x86-64-v3' || '' }}
-
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.target }}
+          path: dist
+
+  linux-cuda:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          # Enable cuda feature in Cargo.toml
+          args: --release --out dist --features cuda
+          sccache: 'true'
+          manylinux: auto
+          # This image contains CUDA 12.1 toolkit and NVCC
+          docker-image: messense/manylinux2014-cuda:12.1
+      - name: Upload CUDA wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-cuda
           path: dist
 
   windows:
@@ -47,12 +62,10 @@ jobs:
         target: [x64, x86]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
           architecture: ${{ matrix.target }}
-      
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -60,9 +73,7 @@ jobs:
           args: --release --out dist
           sccache: 'true'
         env:
-          # Windows x64 optimization
           RUSTFLAGS: ${{ matrix.target == 'x64' && '-C target-cpu=x86-64-v3' || '' }}
-
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -76,11 +87,9 @@ jobs:
         target: [x86_64, aarch64]
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -88,9 +97,7 @@ jobs:
           args: --release --out dist
           sccache: 'true'
         env:
-          # Intel Macs (x86_64) get the AVX2 boost.
           RUSTFLAGS: ${{ matrix.target == 'x86_64' && '-C target-cpu=x86-64-v3' || '' }}
-
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
@@ -99,21 +106,19 @@ jobs:
 
   pypi-publish:
     name: Publish to PyPI
-    needs: [linux, windows, macos]
+    needs: [linux, linux-cuda, windows, macos]
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/tiny_lfm_builtin
     permissions:
       id-token: write
-    
     steps:
       - uses: actions/download-artifact@v4
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist
-
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:

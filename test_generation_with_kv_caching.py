@@ -18,7 +18,7 @@ print(f"Time taken: {time.time() - t0:.2f}s")
 
 print("--- Saving Cache ---")
 # This saves 'my_chat.safetensors' (KV) and 'my_chat.json' (Tokens)
-model.save_session("my_chat") 
+model.save_session("my_chat")
 
 # Simulate restarting the application
 print("--- Reloading Model & Cache ---")
