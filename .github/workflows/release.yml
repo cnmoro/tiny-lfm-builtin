@@ -47,13 +47,11 @@ jobs:
           sccache: 'true'
           manylinux: auto
           docker-image: messense/manylinux2014-cuda:12.1
+
           before-script-linux: |
-            set -ex
-            # 1. Symlink nvcc to a directory that is already in the PATH
-            ln -s /usr/local/cuda/bin/nvcc /usr/local/bin/nvcc
-            # 2. Add the CUDA stub libraries to the linker's search path
-            echo /usr/local/cuda/lib64/stubs > /etc/ld.so.conf.d/cuda.conf
-            ldconfig
+            export PATH="/usr/local/cuda/bin:$PATH"
+            export LD_LIBRARY_PATH="/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH"
+
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
