@@ -1,10 +1,8 @@
-import tiny_lfm_builtin
+from tiny_lfm import TinyLFM
 import os
 
 # 1. Initialize
-base_path = os.path.dirname(os.path.abspath(__file__))
-weights_path = os.path.join(base_path, "model-q4.gguf")
-model = tiny_lfm_builtin.LiquidLFM(weights_path)
+model = TinyLFM(model_size="350M")
 
 # 2. State Management
 history = []
@@ -25,7 +23,7 @@ while True:
     
     # Pass the WHOLE history to Rust
     # Rust will clear cache -> prefill history -> generate new tokens
-    streamer = model.generate(history)
+    streamer = model.chat(history)
 
     for token_text in streamer:
         print(token_text, end="", flush=True)

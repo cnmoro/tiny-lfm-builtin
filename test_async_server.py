@@ -1,11 +1,10 @@
-import tiny_lfm_builtin
+from tiny_lfm import TinyLFM
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 
 # Initialize model
-# Note: If compiled with 'cuda' feature and GPU is present, it will automatically use it.
-model = tiny_lfm_builtin.LiquidLFM("model-q4.gguf")
+model = TinyLFM()
 
 # Simulate a thread pool (like FastAPI uses)
 executor = ThreadPoolExecutor(max_workers=4)
@@ -22,7 +21,7 @@ def handle_request(req_id, prompt, delay):
     chat_input = [{"role": "user", "content": prompt}]
     
     # This call releases GIL in Rust, so other threads can run!
-    result = model.chat_stateless(chat_input, max_new_tokens=40)
+    result = model.chat_stateless(chat_input, max_tokens=40)
     
     print(f"[{req_id}] Finished.")
     return result

@@ -48,6 +48,7 @@ jobs:
           manylinux: auto
           docker-image: messense/manylinux2014-cuda:12.1
           docker-options: >-
+            -e NVCC=/usr/local/cuda/bin/nvcc
             -e PATH=/opt/rh/devtoolset-10/root/usr/bin:/usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
             -e LD_LIBRARY_PATH=/usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64:/opt/rh/devtoolset-10/root/usr/lib64:/opt/rh/devtoolset-10/root/usr/lib
             -e CUDA_PATH=/usr/local/cuda

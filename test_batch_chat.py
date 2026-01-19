@@ -1,8 +1,8 @@
-import tiny_lfm_builtin
+from tiny_lfm import TinyLFM
 import time
 
-# Initialize model
-model = tiny_lfm_builtin.LiquidLFM("model-q4.gguf")
+# Initialize model via Python wrapper
+model = TinyLFM()
 
 # Define multiple chat sessions
 chats = [
@@ -21,8 +21,8 @@ chats = [
 print(f"--- Processing {len(chats)} chats in parallel ---")
 start_time = time.time()
 
-# This uses the new stateless parallel implementation (Rayon)
-results = model.batch_chat(chats, max_new_tokens=50)
+# This uses the stateless parallel implementation through the wrapper
+results = model.batch_chat(chats, max_tokens=50)
 
 end_time = time.time()
 print(f"Total time: {end_time - start_time:.2f}s")

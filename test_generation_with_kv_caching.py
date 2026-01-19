@@ -1,7 +1,7 @@
-import tiny_lfm_builtin
+from tiny_lfm import TinyLFM
 import time
 
-model = tiny_lfm_builtin.LiquidLFM("model-q4.gguf")
+model = TinyLFM()
 
 history = [{"role": "user", "content": """
 Context:
@@ -12,25 +12,25 @@ Read the context carefully""".strip()}]
 
 print("--- Turn 1 (Cold Start) ---")
 t0 = time.time()
-stream = model.generate(history)
+stream = model.chat(history)
 for t in stream: pass 
 print(f"Time taken: {time.time() - t0:.2f}s")
 
 print("--- Saving Cache ---")
 # This saves 'my_chat.safetensors' (KV) and 'my_chat.json' (Tokens)
-model.save_session("my_chat")
+model.save_cache("my_chat")
 
 # Simulate restarting the application
 print("--- Reloading Model & Cache ---")
-model2 = tiny_lfm_builtin.LiquidLFM("model-q4.gguf")
-model2.load_session("my_chat")
+model2 = TinyLFM()
+model2.load_cache("my_chat")
 
 print("--- Turn 2 (Warm Start) ---")
 history.append({"role": "assistant", "content": "I've read the context carefully."})
 history.append({"role": "user", "content": "Summarize the content in a single paragraph."})
 
 t0 = time.time()
-# The Rust logic will see that the start of the history matches the loaded cache.
-stream = model2.generate(history)
+# The engine will see that the start of the history matches the loaded cache.
+stream = model2.chat(history)
 for t in stream: print(t, end="", flush=True)
 print(f"\nTime taken: {time.time() - t0:.2f}s")
