@@ -1,6 +1,12 @@
-import os
+import os, sys
 import tiny_lfm_builtin
 from typing import List, Dict, Optional, Union, Generator
+import urllib.request
+
+# Configuration
+MODEL_URL = "https://huggingface.co/cnmoro/LFM2-350M-Q4_0-GGUF/resolve/main/model-q4.gguf"
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".cache", "tiny_lfm_builtin")
+MODEL_FILENAME = "model-q4.gguf"
 
 class TinyLFM:
     def __init__(self):
@@ -8,12 +14,42 @@ class TinyLFM:
         Initialize the Liquid LFM model.
         
         Args:
-            model_path (str): Path to the GGUF model file.
+            model_path (str, optional): Path to GGUF. If None, downloads/uses the cached model.
         """
-        base_dir = os.path.dirname(os.path.abspath(__file__))
-        model_path = os.path.join(base_dir, "model-q4.gguf")
-        self._engine = tiny_lfm_builtin.LiquidLFM(model_path)
+        os.makedirs(CACHE_DIR, exist_ok=True)
+        model_path = os.path.join(CACHE_DIR, MODEL_FILENAME)
+        
+        if not os.path.exists(model_path):
+            self._download_model(model_path)
+        
+        if not os.path.exists(model_path):
+             raise FileNotFoundError(f"Model file not found at: {model_path}")
 
+        print(f"Loading LFM Engine from {model_path}...")
+        self._engine = tiny_lfm_builtin.LiquidLFM(model_path)
+        print("Engine loaded. KV Cache is active.")
+
+    def _download_model(self, dest_path: str):
+        print(f"Model not found locally.")
+        print(f"Downloading LFM2-350M (approx 200MB) to {dest_path}...")
+        
+        def _progress(count, block_size, total_size):
+            percent = int(count * block_size * 100 / total_size)
+            sys.stdout.write(f"\rDownload: {percent}%")
+            sys.stdout.flush()
+
+        try:
+            urllib.request.urlretrieve(MODEL_URL, dest_path, reporthook=_progress)
+            print("\nDownload complete.")
+        except KeyboardInterrupt:
+            print("\nDownload cancelled.")
+            if os.path.exists(dest_path): os.remove(dest_path)
+            sys.exit(1)
+        except Exception as e:
+            print(f"\nError downloading model: {e}")
+            if os.path.exists(dest_path): os.remove(dest_path)
+            raise e
+        
     def chat(self,
              messages: List[Dict[str, str]], 
              max_tokens: int = None, 
@@ -116,7 +152,7 @@ class TinyLFM:
 
 if __name__ == "__main__":
     try:
-        lfm = TinyLFM("model-q4.gguf")
+        lfm = TinyLFM()
         
         print("\n--- 1. Regular Chat Streaming ---")
         history = [{"role": "user", "content": "What is 2+2?"}]

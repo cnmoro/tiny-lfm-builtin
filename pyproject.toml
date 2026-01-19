@@ -25,4 +25,4 @@ classifiers = [
 Repository = "https://github.com/cnmoro/tiny-lfm-builtin"
 
 [tool.maturin]
-include = ["model-q4.gguf", "tiny_lfm.py"]
+include = ["tiny_lfm.py"]
