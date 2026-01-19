@@ -101,14 +101,14 @@ jobs:
         shell: cmd
       
       - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }})
-        uses: PyO3/maturin-action@v2
+        uses: PyO3/maturin-action@v1
         with:
           target: x64
           args: --release --out dist --features cuda
           sccache: 'true'
-          nvcc-extra-args: "-allow-unsupported-compiler"
         env:
           CUDA_COMPUTE_CAP: ${{ matrix.cuda_compute_cap }}
+          NVCC_FLAGS: "-allow-unsupported-compiler"
       
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
