@@ -50,7 +50,8 @@ jobs:
         env:
           CUDA_PATH: /usr/local/cuda
           CUDA_ROOT: /usr/local/cuda
-          # 1. Add this to explicitly tell cudarc where the compiler is
+          PATH: /usr/local/cuda/bin:/usr/local/bin:/usr/bin:/bin
+          LD_LIBRARY_PATH: /usr/local/cuda/lib64/stubs:/usr/local/cuda/lib64
           NVCC: /usr/local/cuda/bin/nvcc
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
