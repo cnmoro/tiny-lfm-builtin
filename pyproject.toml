@@ -4,9 +4,25 @@ build-backend = "maturin"
 
 [project]
 name = "tiny_lfm_builtin"
+description = "LiquidAI-LFM2-350M embedded in a python package (200mb); inference with rust; completely encapsulated"
 version = "0.0.1"
+authors = [
+  { name="Carlo Moro", email="cnmoro@gmail.com" },
+]
 requires-python = ">=3.8"
 classifiers = [
     "Programming Language :: Rust",
     "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: MacOS",
 ]
+
+[project.urls]
+Repository = "https://github.com/cnmoro/tiny-lfm-builtin"
+
+[tool.maturin]
+include = ["model-q4.gguf", "tiny_lfm.py"]
