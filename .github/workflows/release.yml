@@ -47,11 +47,38 @@ jobs:
           sccache: 'true'
           manylinux: auto
           docker-image: messense/manylinux2014-cuda:12.1
-
+          
           before-script-linux: |
-            export PATH="/usr/local/cuda/bin:$PATH"
-            export LD_LIBRARY_PATH="/usr/local/cuda/lib64/stubs:$LD_LIBRARY_PATH"
-
+            set -e
+            echo "Setting up CUDA environment..."
+            
+            # Find the actual CUDA installation directory
+            CUDA_REAL_PATH=$(ls -d /usr/local/cuda-* | head -n 1)
+            echo "Found CUDA at: $CUDA_REAL_PATH"
+            
+            # Ensure /usr/local/cuda points to the specific version
+            if [ ! -d "/usr/local/cuda" ]; then
+              ln -s "$CUDA_REAL_PATH" /usr/local/cuda
+            fi
+            
+            # Make nvcc available in the standard system PATH
+            ln -sf "$CUDA_REAL_PATH/bin/nvcc" /usr/bin/nvcc
+            
+            # Register CUDA stub libraries (required for linking without GPU driver)
+            echo "$CUDA_REAL_PATH/lib64/stubs" > /etc/ld.so.conf.d/cuda-stubs.conf
+            echo "$CUDA_REAL_PATH/lib64" >> /etc/ld.so.conf.d/cuda-stubs.conf
+            ldconfig
+            
+            # Verify setup
+            which nvcc
+            nvcc --version
+            
+          # We set CUDA_PATH/ROOT helpers, but we DO NOT touch PATH or LD_LIBRARY_PATH
+          docker-options: >-
+            -e CUDA_PATH=/usr/local/cuda
+            -e CUDA_ROOT=/usr/local/cuda
+            -e CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
+            
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
