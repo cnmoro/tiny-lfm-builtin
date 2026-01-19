@@ -49,7 +49,7 @@ jobs:
           container: sameli/manylinux2014_x86_64_cuda_12.3
           before-script-linux: |
             nvcc --version
-          docker-options: -e CUDA_COMPUTE_CAP=75;80;86;89;90
+          docker-options: -e CUDA_COMPUTE_CAP=80
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
