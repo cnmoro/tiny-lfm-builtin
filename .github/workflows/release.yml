@@ -101,7 +101,7 @@ jobs:
         shell: cmd
       
       - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }})
-        uses: PyO3/maturin-action@v1
+        uses: PyO3/maturin-action@v2
         with:
           target: x64
           args: --release --out dist --features cuda
