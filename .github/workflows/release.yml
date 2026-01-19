@@ -36,25 +36,25 @@ jobs:
           path: dist
 
   linux-cuda:
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v4
-    - name: Build CUDA wheels
-      uses: PyO3/maturin-action@v1
-      with:
-        target: x86_64
-        args: --release --out dist --features cuda
-        sccache: 'true'
-        manylinux: 2_28
-        container: sameli/manylinux2014_x86_64_cuda_12.3
-        before-script-linux: |
-          # CUDA already configured in this image
-          nvcc --version
-    - name: Upload CUDA wheels
-      uses: actions/upload-artifact@v4
-      with:
-        name: wheels-linux-cuda
-        path: dist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build CUDA wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: x86_64
+          args: --release --out dist --features cuda
+          sccache: 'true'
+          manylinux: 2_28
+          container: sameli/manylinux2014_x86_64_cuda_12.3
+          before-script-linux: |
+            # CUDA already configured in this image
+            nvcc --version
+      - name: Upload CUDA wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-cuda
+          path: dist
 
   windows:
     runs-on: windows-latest
