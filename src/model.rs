@@ -16,8 +16,19 @@ pub struct Config {
     pub head_dim: usize,
     pub norm_eps: f64,
     pub conv_l_cache: usize, 
+    pub conv_bias: bool,
     pub layer_types: Vec<String>,
     pub rope_theta: f32,
+    
+    // MoE Config
+    pub intermediate_size: usize,
+    pub moe_intermediate_size: usize,
+    pub num_dense_layers: usize,
+    pub num_experts_per_tok: usize,
+    pub num_experts: usize,
+    pub use_expert_bias: bool,
+    pub routed_scaling_factor: f64,
+    pub norm_topk_prob: bool,
 }
 
 impl Config {
@@ -38,23 +49,49 @@ impl Config {
             let v = get_val(keys)?;
             v.to_f64().or_else(|_| v.to_f32().map(|v| v as f64)).map_err(|_| candle_core::Error::Msg("Not float".into()))
         };
+        let get_bool = |keys: &[&str]| -> Result<bool> {
+            match get_val(keys) {
+                Ok(gguf_file::Value::Bool(b)) => Ok(*b),
+                _ => Ok(false), // Default to false if not found or mismatch
+            }
+        };
 
-        let hidden_size = get_usize(&["lfm2.embedding_length", "llama.embedding_length", "hidden_size"])?;
-        let num_attention_heads = get_usize(&["lfm2.attention.head_count", "llama.attention.head_count", "num_attention_heads"])?;
-        let num_hidden_layers = get_usize(&["lfm2.block_count", "llama.block_count", "num_hidden_layers"])?;
-        let num_key_value_heads = get_usize(&["lfm2.attention.head_count_kv", "llama.attention.head_count_kv", "num_key_value_heads"]).unwrap_or(num_attention_heads);
-        let norm_eps = get_f64(&["lfm2.attention.layer_norm_rms_epsilon", "llama.attention.layer_norm_rms_epsilon", "norm_eps"])?;
-        let rope_theta = get_f64(&["lfm2.rope.freq_base", "llama.rope.freq_base", "rope_theta"]).unwrap_or(10000.0);
-        let conv_l_cache = get_usize(&["lfm2.conv_l_cache", "conv_L_cache"]).unwrap_or(4);
+        // Standard Config
+        let hidden_size = get_usize(&["lfm2moe.embedding_length", "lfm2.embedding_length", "llama.embedding_length", "hidden_size"])?;
+        let num_attention_heads = get_usize(&["lfm2moe.attention.head_count", "lfm2.attention.head_count", "llama.attention.head_count", "num_attention_heads"])?;
+        let num_hidden_layers = get_usize(&["lfm2moe.block_count", "lfm2.block_count", "llama.block_count", "num_hidden_layers"])?;
+        let num_key_value_heads = get_usize(&["lfm2moe.attention.head_count_kv", "lfm2.attention.head_count_kv", "llama.attention.head_count_kv", "num_key_value_heads"]).unwrap_or(num_attention_heads);
+        let norm_eps = get_f64(&["lfm2moe.attention.layer_norm_rms_epsilon", "lfm2.attention.layer_norm_rms_epsilon", "llama.attention.layer_norm_rms_epsilon", "norm_eps"])?;
+        let rope_theta = get_f64(&["lfm2moe.rope.freq_base", "lfm2.rope.freq_base", "llama.rope.freq_base", "rope_theta"]).unwrap_or(10000.0);
+        let conv_l_cache = get_usize(&["lfm2moe.conv_l_cache", "lfm2.conv_l_cache", "conv_L_cache"]).unwrap_or(4);
+        let conv_bias = get_bool(&["lfm2moe.conv_bias", "lfm2.conv_bias"]).unwrap_or(false);
+        let intermediate_size = get_usize(&["lfm2moe.feed_forward_length", "lfm2.feed_forward_length", "intermediate_size"]).unwrap_or(0);
+        
+        // MoE Config
+        let num_experts = get_usize(&["lfm2moe.expert_count", "lfm2.expert_count", "num_experts"]).unwrap_or(0);
+        
+        // Fix: Default to 2 dense layers if experts exist (Hybrid MoE), else all dense
+        let num_dense_layers = get_usize(&["lfm2moe.num_dense_layers", "lfm2.num_dense_layers"])
+            .unwrap_or_else(|_| if num_experts > 0 { 2 } else { num_hidden_layers });
 
-        let layer_types = match get_val(&["lfm2.layer_types", "layer_types"]) {
+        let moe_intermediate_size = get_usize(&["lfm2moe.expert_feed_forward_length", "lfm2.expert_feed_forward_length", "moe_intermediate_size"])
+            .unwrap_or(if num_experts > 0 { intermediate_size / 4 } else { 0 }); 
+        
+        let num_experts_per_tok = get_usize(&["lfm2moe.expert_used_count", "lfm2.expert_used_count", "num_experts_per_tok"]).unwrap_or(0);
+        let use_expert_bias = get_bool(&["lfm2moe.use_expert_bias", "lfm2.use_expert_bias"]).unwrap_or(true);
+        let routed_scaling_factor = get_f64(&["lfm2moe.expert_routed_scaling_factor", "lfm2.expert_routed_scaling_factor"]).unwrap_or(1.0);
+        let norm_topk_prob = get_bool(&["lfm2moe.expert_norm_topk_prob", "lfm2.expert_norm_topk_prob"]).unwrap_or(true);
+
+        let layer_types = match get_val(&["lfm2moe.layer_types", "lfm2.layer_types", "layer_types"]) {
             Ok(v) => v.to_string()?.split(',').map(|s| s.to_string()).collect(),
             Err(_) => vec![]
         };
 
         Ok(Config {
             hidden_size, num_hidden_layers, num_attention_heads, num_key_value_heads,
-            head_dim: hidden_size / num_attention_heads, norm_eps, conv_l_cache, layer_types, rope_theta: rope_theta as f32,
+            head_dim: hidden_size / num_attention_heads, norm_eps, conv_l_cache, conv_bias, layer_types, rope_theta: rope_theta as f32,
+            intermediate_size, moe_intermediate_size, num_dense_layers, num_experts_per_tok, num_experts,
+            use_expert_bias, routed_scaling_factor, norm_topk_prob,
         })
     }
 }
@@ -104,7 +141,6 @@ impl LfmCache {
 
     pub fn load(&mut self, path: &str, device: &Device) -> Result<()> {
         let t = candle_core::safetensors::load(path, device)?;
-        // We assume the cache size matches the model size, typically handled by caller
         for (i, state) in self.states.iter_mut().enumerate() {
             let k_name = format!("layer.{}.attn.k", i);
             let v_name = format!("layer.{}.attn.v", i);
@@ -184,6 +220,14 @@ impl Weights {
         };
         Ok(QLinear { inner, out_dim })
     }
+
+    pub fn pop_dequantized(&mut self, name: &str) -> Result<Tensor> {
+         let w_qt = self.tensors.remove(name).ok_or_else(|| {
+            candle_core::Error::Msg(format!("Missing tensor '{}'", name))
+        })?;
+        w_qt.dequantize(&self.device)
+    }
+
     pub fn has(&self, name: &str) -> bool { self.tensors.contains_key(name) }
 }
 
@@ -232,6 +276,193 @@ impl Mlp {
     }
 }
 
+struct MoeBlock {
+    gate: QLinear,
+    experts_gate: Vec<Tensor>, 
+    experts_up: Vec<Tensor>,
+    experts_down: Vec<Tensor>,
+    expert_bias: Option<Tensor>,
+    num_experts: usize,
+    num_experts_per_tok: usize,
+    routed_scaling_factor: f64,
+    norm_topk_prob: bool,
+    use_expert_bias: bool,
+}
+
+impl MoeBlock {
+    fn new(cfg: &Config, weights: &mut Weights, prefix: &str) -> Result<Self> {
+        let gate = weights.pop_linear(&format!("{}.ffn_gate_inp.weight", prefix))
+            .or_else(|_| weights.pop_linear(&format!("{}.ffn_gate.weight", prefix)))?;
+
+        let expert_bias = if cfg.use_expert_bias {
+             if weights.has(&format!("{}.expert_bias", prefix)) {
+                 Some(weights.pop_tensor(&format!("{}.expert_bias", prefix))?)
+             } else if weights.has(&format!("{}.exp_probs_b.bias", prefix)) {
+                 Some(weights.pop_tensor(&format!("{}.exp_probs_b.bias", prefix))?)
+             } else {
+                 Some(Tensor::zeros(cfg.num_experts, DType::F32, &weights.device)?)
+             }
+        } else {
+            None
+        };
+
+        // Fix: Handle both 2D (merged) and 3D (stacked) tensors
+        let split_experts = |w: Tensor| -> Result<Vec<Tensor>> {
+            match w.rank() {
+                2 => {
+                    let (d0, _) = w.dims2()?;
+                    if d0 % cfg.num_experts != 0 {
+                        candle_core::bail!("Expert weight dim0 {} not divisible by num_experts {}", d0, cfg.num_experts);
+                    }
+                    w.chunk(cfg.num_experts, 0)
+                },
+                3 => {
+                    let (d0, _d1, _d2) = w.dims3()?;
+                    if d0 != cfg.num_experts {
+                         candle_core::bail!("Expert weight dim0 {} != num_experts {}", d0, cfg.num_experts);
+                    }
+                    // chunk returns [1, d1, d2], we need [d1, d2]
+                    let chunks = w.chunk(cfg.num_experts, 0)?;
+                    chunks.into_iter().map(|c| c.squeeze(0)).collect()
+                },
+                r => candle_core::bail!("Unexpected rank {} for expert weights", r)
+            }
+        };
+
+        let e_gate_raw = weights.pop_dequantized(&format!("{}.ffn_gate_exps.weight", prefix))?;
+        let e_up_raw = weights.pop_dequantized(&format!("{}.ffn_up_exps.weight", prefix))?;
+        let e_down_raw = weights.pop_dequantized(&format!("{}.ffn_down_exps.weight", prefix))?;
+
+        let experts_gate = split_experts(e_gate_raw)?;
+        let experts_up = split_experts(e_up_raw)?;
+        let experts_down = split_experts(e_down_raw)?;
+
+        Ok(Self {
+            gate,
+            experts_gate,
+            experts_up,
+            experts_down,
+            expert_bias,
+            num_experts: cfg.num_experts,
+            num_experts_per_tok: cfg.num_experts_per_tok,
+            routed_scaling_factor: cfg.routed_scaling_factor,
+            norm_topk_prob: cfg.norm_topk_prob,
+            use_expert_bias: cfg.use_expert_bias,
+        })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let (b_sz, seq_len, hidden_dim) = x.dims3()?;
+        let x_flat = x.reshape((b_sz * seq_len, hidden_dim))?;
+
+        // 1. Gating
+        let router_logits = self.gate.forward(&x_flat)?; // [batch*seq, num_experts]
+        let routing_weights = candle_nn::ops::sigmoid(&router_logits)?;
+
+        let scores_for_routing = if let Some(bias) = &self.expert_bias {
+             (routing_weights.broadcast_add(bias))?
+        } else {
+            routing_weights.clone()
+        };
+
+        // 2. Top-K Selection (CPU Fallback for compatibility)
+        let k = self.num_experts_per_tok;
+        
+        // Move scores to CPU to perform sorting/topk manually
+        let scores_vec: Vec<Vec<f32>> = scores_for_routing.to_dtype(DType::F32)?.to_vec2()?;
+        let mut topk_indices_flat = Vec::with_capacity(scores_vec.len() * k);
+
+        for row in scores_vec {
+            let mut pairs: Vec<(usize, f32)> = row.into_iter().enumerate().collect();
+            // Sort descending
+            pairs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            // Take top k
+            for i in 0..k {
+                topk_indices_flat.push(pairs[i].0 as u32);
+            }
+        }
+
+        // Create Tensor from indices [TotalRows, K]
+        let topk_indices = Tensor::from_vec(
+            topk_indices_flat, 
+            (b_sz * seq_len, k), 
+            &Device::Cpu
+        )?.to_device(x.device())?;
+
+        // Gather routing weights
+        let mut routing_weights = routing_weights.gather(&topk_indices, D::Minus1)?;
+
+        if self.norm_topk_prob {
+            let sum = routing_weights.sum_keepdim(D::Minus1)?;
+            routing_weights = routing_weights.broadcast_div(&(sum + 1e-6)?)?;
+        }
+        
+        routing_weights = (routing_weights * self.routed_scaling_factor)?;
+
+        // 3. Expert computation
+        let mut final_hidden_states = Tensor::zeros_like(&x_flat)?;
+        
+        // Process experts
+        let indices_vec: Vec<Vec<u32>> = topk_indices.to_device(&Device::Cpu)?.to_dtype(DType::U32)?.to_vec2()?; 
+        
+        // Map rows to experts
+        let mut expert_map: Vec<Vec<usize>> = vec![vec![]; self.num_experts];
+        let mut row_weight_map: Vec<Vec<usize>> = vec![vec![]; self.num_experts]; 
+
+        for (row_idx, expert_list) in indices_vec.iter().enumerate() {
+            // Explicitly define types to help inference
+            for (k_idx, &ex_id) in expert_list.iter().enumerate() {
+                let expert_id = ex_id as usize;
+                if expert_id < self.num_experts {
+                    expert_map[expert_id].push(row_idx);
+                    row_weight_map[expert_id].push(k_idx);
+                }
+            }
+        }
+
+        for ex_id in 0..self.num_experts {
+            let rows = &expert_map[ex_id];
+            if rows.is_empty() { continue; }
+
+            let rows_u32: Vec<u32> = rows.iter().map(|&r| r as u32).collect();
+            let rows_tensor = Tensor::new(rows_u32.as_slice(), x.device())?;
+            
+            let x_e = x_flat.index_select(&rows_tensor, 0)?; 
+
+            let g = x_e.matmul(&self.experts_gate[ex_id].t()?)?;
+            let u = x_e.matmul(&self.experts_up[ex_id].t()?)?;
+            let act = (candle_nn::ops::silu(&g)? * u)?;
+            let out = act.matmul(&self.experts_down[ex_id].t()?)?; 
+
+            let k_indices = &row_weight_map[ex_id];
+            let k_indices_u32: Vec<u32> = k_indices.iter().map(|&k| k as u32).collect();
+            let k_tensor = Tensor::new(k_indices_u32.as_slice(), x.device())?;
+            
+            let rw_subset = routing_weights.index_select(&rows_tensor, 0)?;
+            let scale = rw_subset.gather(&k_tensor.unsqueeze(1)?, 1)?.squeeze(1)?; 
+            
+            let out_scaled = out.broadcast_mul(&scale.unsqueeze(1)?)?;
+            final_hidden_states = final_hidden_states.index_add(&rows_tensor, &out_scaled, 0)?;
+        }
+
+        final_hidden_states.reshape((b_sz, seq_len, hidden_dim))
+    }
+}
+
+enum FeedForward {
+    Dense(Mlp),
+    Moe(MoeBlock),
+}
+
+impl FeedForward {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        match self {
+            FeedForward::Dense(m) => m.forward(x),
+            FeedForward::Moe(m) => m.forward(x),
+        }
+    }
+}
+
 struct ShortConv {
     conv_weight: Tensor, 
     conv_bias: Option<Tensor>,
@@ -249,7 +480,7 @@ impl ShortConv {
         let mut conv_w = weights.pop_tensor(&w)?;
         if conv_w.rank() == 2 { conv_w = conv_w.unsqueeze(1)?; }
         let l_cache = conv_w.dim(2).unwrap_or(cfg.conv_l_cache); 
-        let conv_bias = if weights.has(&b) { Some(weights.pop_tensor(&b)?) } else { None };
+        let conv_bias = if cfg.conv_bias && weights.has(&b) { Some(weights.pop_tensor(&b)?) } else { None };
 
         Ok(Self {
             conv_weight: conv_w, conv_bias,
@@ -268,29 +499,23 @@ impl ShortConv {
         let bx_t = bx.transpose(1, 2)?; 
 
         // Retrieve previous state or initialize with zeros
-        // State shape: (b_sz, dim, l_cache)
         let current_state = match state {
             Some(LayerState::Conv { state: s }) => s.clone(),
             _ => Tensor::zeros((b_sz, bx_t.dim(1)?, self.l_cache), bx.dtype(), bx.device())?
         };
 
-        // Prepare padding from previous state to ensure continuity.
-        // We take the last (l_cache - 1) elements from the state to pad the beginning of the current chunk.
+        // Prepare padding from previous state to ensure continuity
         let padding = current_state.narrow(2, 1, self.l_cache - 1)?;
         let padded = Tensor::cat(&[&padding, &bx_t], 2)?;
 
         let conv_out = if seq_len > 1 {
-            // Apply convolution on the padded sequence
             padded.conv1d(&self.conv_weight, 0, 1, 1, self.conv_weight.dim(0)?)?
         } else {
-            // Optimized path for single-token generation (seq_len=1)
-            // This is mathematically equivalent to conv1d with the specific padding/state logic
             let w = self.conv_weight.reshape((1, (), self.l_cache))?; 
             padded.broadcast_mul(&w)?.sum(2)?.unsqueeze(2)?
         };
 
-        // Update state with the last l_cache elements from the padded sequence
-        // This preserves the history for the next forward pass
+        // Update state
         let next_state = padded.narrow(2, padded.dim(2)? - self.l_cache, self.l_cache)?;
         *state = Some(LayerState::Conv { state: next_state.contiguous()? });
 
@@ -350,9 +575,6 @@ impl Attention {
 
         let (k, v) = match state {
             Some(LayerState::Attn { k: pk, v: pv }) => { 
-                // pk and pv are &mut Tensor because state is &mut.
-                // &k and &v are &Tensor.
-                // We coerce pk to &Tensor via &*pk.
                 let nk = Tensor::cat(&[&*pk, &k], 2)?.contiguous()?; 
                 let nv = Tensor::cat(&[&*pv, &v], 2)?.contiguous()?;
                 *state = Some(LayerState::Attn { k: nk.clone(), v: nv.clone() });
@@ -376,7 +598,7 @@ impl Attention {
 enum Layer { Attn(Attention), Conv(ShortConv) }
 
 pub struct Lfm2Model {
-    embed: Embedding, layers: Vec<(Layer, RmsNorm, Mlp, RmsNorm)>, final_norm: RmsNorm, lm_head: QLinear,
+    embed: Embedding, layers: Vec<(Layer, RmsNorm, FeedForward, RmsNorm)>, final_norm: RmsNorm, lm_head: QLinear,
 }
 
 impl Lfm2Model {
@@ -411,16 +633,21 @@ impl Lfm2Model {
                 Layer::Conv(ShortConv::new(&cfg, &mut weights, &p_base, use_gguf)?)
             };
 
-            let (w1, w2, w3) = if use_gguf {
-                (format!("{}.ffn_gate.weight", p_base), format!("{}.ffn_down.weight", p_base), format!("{}.ffn_up.weight", p_base))
+            let ffn = if i < cfg.num_dense_layers {
+                let (w1, w2, w3) = if use_gguf {
+                    (format!("{}.ffn_gate.weight", p_base), format!("{}.ffn_down.weight", p_base), format!("{}.ffn_up.weight", p_base))
+                } else {
+                    (format!("{}.feed_forward.w1.weight", p_base), format!("{}.feed_forward.w2.weight", p_base), format!("{}.feed_forward.w3.weight", p_base))
+                };
+                FeedForward::Dense(Mlp { w1: weights.pop_linear(&w1)?, w2: weights.pop_linear(&w2)?, w3: weights.pop_linear(&w3)? })
             } else {
-                (format!("{}.feed_forward.w1.weight", p_base), format!("{}.feed_forward.w2.weight", p_base), format!("{}.feed_forward.w3.weight", p_base))
+                FeedForward::Moe(MoeBlock::new(&cfg, &mut weights, &p_base)?)
             };
 
             layers.push((
                 core,
                 RmsNorm::new(weights.pop_tensor(&p_norm1)?, cfg.norm_eps),
-                Mlp { w1: weights.pop_linear(&w1)?, w2: weights.pop_linear(&w2)?, w3: weights.pop_linear(&w3)? },
+                ffn,
                 RmsNorm::new(weights.pop_tensor(&p_norm2)?, cfg.norm_eps),
             ));
         }
@@ -439,11 +666,10 @@ impl Lfm2Model {
 
     pub fn forward(&self, x: &Tensor, pos: usize, cache: &mut LfmCache) -> Result<Tensor> {
         let mut h = self.embed.forward(x)?;
-        for (i, (layer, op_norm, mlp, ffn_norm)) in self.layers.iter().enumerate() {
+        for (i, (layer, op_norm, ffn, ffn_norm)) in self.layers.iter().enumerate() {
             let resid = h.clone();
             let norm = op_norm.forward(&h)?;
             
-            // Pass the mutable state corresponding to this layer
             let out = match layer { 
                 Layer::Attn(a) => a.forward(&norm, pos, &mut cache.states[i])?, 
                 Layer::Conv(c) => c.forward(&norm, &mut cache.states[i])? 
@@ -452,7 +678,7 @@ impl Lfm2Model {
             h = (resid + out)?;
             let resid = h.clone();
             let norm = ffn_norm.forward(&h)?;
-            h = (resid + mlp.forward(&norm)?)?;
+            h = (resid + ffn.forward(&norm)?)?;
         }
         let h = self.final_norm.forward(&h)?;
         let (_b, seq, _) = h.dims3()?;
