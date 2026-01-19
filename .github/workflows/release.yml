@@ -36,68 +36,25 @@ jobs:
           path: dist
 
   linux-cuda:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build CUDA wheels
-        uses: PyO3/maturin-action@v1
-        with:
-          target: x86_64
-          args: --release --out dist --features cuda
-          sccache: 'true'
-          manylinux: 2_28
-          docker-image: messense/manylinux_2_28-cuda:12.1
-          
-          before-script-linux: |
-            set -e
-            echo "Locating CUDA..."
-            
-            # 1. Check the standard path first (most likely for this image)
-            if [ -f "/usr/local/cuda/bin/nvcc" ]; then
-                CUDA_ROOT="/usr/local/cuda"
-            # 2. Check for versioned directories (e.g., cuda-12.1)
-            elif ls -d /usr/local/cuda-* >/dev/null 2>&1; then
-                CUDA_ROOT=$(ls -d /usr/local/cuda-* | head -n 1)
-            # 3. Last resort: Search the filesystem
-            else
-                echo "CUDA not found in standard paths. Searching..."
-                NVCC_PATH=$(find /usr/local -name nvcc -type f -print -quit 2>/dev/null)
-                if [ -z "$NVCC_PATH" ]; then
-                    echo "FATAL: nvcc executable not found in Docker image."
-                    exit 1
-                fi
-                CUDA_ROOT=$(dirname $(dirname "$NVCC_PATH"))
-            fi
-            
-            echo "CUDA Root found at: $CUDA_ROOT"
-            
-            # Symlink nvcc to /usr/bin/nvcc so it is in the default PATH
-            ln -sf "$CUDA_ROOT/bin/nvcc" /usr/bin/nvcc
-            
-            # Ensure /usr/local/cuda exists (for crate compatibility)
-            if [ ! -d "/usr/local/cuda" ]; then
-                ln -s "$CUDA_ROOT" /usr/local/cuda
-            fi
-            
-            # Configure Dynamic Linker to find CUDA stubs (fixes linking errors)
-            echo "$CUDA_ROOT/lib64/stubs" > /etc/ld.so.conf.d/cuda.conf
-            echo "$CUDA_ROOT/lib64" >> /etc/ld.so.conf.d/cuda.conf
-            ldconfig
-            
-            # Verify
-            nvcc --version
-            
-          # Pass env vars to help crates find headers, but DO NOT set PATH
-          docker-options: >-
-            -e CUDA_PATH=/usr/local/cuda
-            -e CUDA_ROOT=/usr/local/cuda
-            -e CUDA_TOOLKIT_ROOT_DIR=/usr/local/cuda
-            
-      - name: Upload CUDA wheels
-        uses: actions/upload-artifact@v4
-        with:
-          name: wheels-linux-cuda
-          path: dist
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/checkout@v4
+    - name: Build CUDA wheels
+      uses: PyO3/maturin-action@v1
+      with:
+        target: x86_64
+        args: --release --out dist --features cuda
+        sccache: 'true'
+        manylinux: 2_28
+        container: sameli/manylinux2014_x86_64_cuda_12.3
+        before-script-linux: |
+          # CUDA already configured in this image
+          nvcc --version
+    - name: Upload CUDA wheels
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheels-linux-cuda
+        path: dist
 
   windows:
     runs-on: windows-latest
