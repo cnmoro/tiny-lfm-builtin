@@ -48,10 +48,8 @@ jobs:
           manylinux: 2_28
           container: sameli/manylinux2014_x86_64_cuda_12.3
           before-script-linux: |
-            # CUDA already configured in this image
+            export CUDA_COMPUTE_CAP="75;80;86;89;90"
             nvcc --version
-        env:
-          CUDA_COMPUTE_CAP: "75;80;86;89;90"
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
