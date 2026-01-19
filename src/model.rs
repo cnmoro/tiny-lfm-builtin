@@ -267,23 +267,33 @@ impl ShortConv {
         let bx = (b_param * x_param)?; 
         let bx_t = bx.transpose(1, 2)?; 
 
+        // Retrieve previous state or initialize with zeros
+        // State shape: (b_sz, dim, l_cache)
+        let current_state = match state {
+            Some(LayerState::Conv { state: s }) => s.clone(),
+            _ => Tensor::zeros((b_sz, bx_t.dim(1)?, self.l_cache), bx.dtype(), bx.device())?
+        };
+
+        // Prepare padding from previous state to ensure continuity.
+        // We take the last (l_cache - 1) elements from the state to pad the beginning of the current chunk.
+        let padding = current_state.narrow(2, 1, self.l_cache - 1)?;
+        let padded = Tensor::cat(&[&padding, &bx_t], 2)?;
+
         let conv_out = if seq_len > 1 {
-            let padding = Tensor::zeros((b_sz, bx_t.dim(1)?, self.l_cache - 1), bx.dtype(), bx.device())?;
-            let padded = Tensor::cat(&[&padding, &bx_t], 2)?;
+            // Apply convolution on the padded sequence
             padded.conv1d(&self.conv_weight, 0, 1, 1, self.conv_weight.dim(0)?)?
         } else {
-            let current_state = match state {
-                Some(LayerState::Conv { state: s }) => s.clone(),
-                _ => Tensor::zeros((b_sz, bx_t.dim(1)?, self.l_cache), bx.dtype(), bx.device())?
-            };
-            
-            // Shift state
-            let new_state = Tensor::cat(&[&current_state.i((.., .., 1..))?, &bx_t], 2)?;
-            *state = Some(LayerState::Conv { state: new_state.clone() });
-            
+            // Optimized path for single-token generation (seq_len=1)
+            // This is mathematically equivalent to conv1d with the specific padding/state logic
             let w = self.conv_weight.reshape((1, (), self.l_cache))?; 
-            new_state.broadcast_mul(&w)?.sum(2)?.unsqueeze(2)?
+            padded.broadcast_mul(&w)?.sum(2)?.unsqueeze(2)?
         };
+
+        // Update state with the last l_cache elements from the padded sequence
+        // This preserves the history for the next forward pass
+        let next_state = padded.narrow(2, padded.dim(2)? - self.l_cache, self.l_cache)?;
+        *state = Some(LayerState::Conv { state: next_state.contiguous()? });
+
         let mut out = conv_out;
         if let Some(bias) = &self.conv_bias { out = out.broadcast_add(&bias.reshape((1, (), 1))?)?; }
         let y = (c_param * out.transpose(1, 2)?)?;

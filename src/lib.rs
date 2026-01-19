@@ -84,6 +84,7 @@ struct ChatMessage { role: String, content: String }
 
 impl LiquidLFM {
     // Helper to run inference on a batch of token vectors using Rayon
+    // Inside impl LiquidLFM
     fn run_parallel_inference(&self, inputs: Vec<Vec<u32>>, max_new_tokens: usize) -> Result<Vec<String>, candle_core::Error> {
         let model = &self.model;
         let device = &self.device;
@@ -94,11 +95,15 @@ impl LiquidLFM {
             let mut local_cache = LfmCache::new(num_layers);
             let mut current_pos = 0;
 
-            // Prefill
-            for chunk in tokens.chunks(512) {
-                 let input_tensor = Tensor::new(chunk, device)?.unsqueeze(0)?;
-                 model.forward(&input_tensor, current_pos, &mut local_cache)?;
-                 current_pos += chunk.len();
+            // Prefill: Process all tokens except the last one
+            // This sets up the KV cache and Conv state up to the second-to-last token.
+            let prefill_len = tokens.len().saturating_sub(1);
+            if prefill_len > 0 {
+                for chunk in tokens[..prefill_len].chunks(512) {
+                    let input_tensor = Tensor::new(chunk, device)?.unsqueeze(0)?;
+                    model.forward(&input_tensor, current_pos, &mut local_cache)?;
+                    current_pos += chunk.len();
+                }
             }
 
             // Generation
@@ -106,7 +111,9 @@ impl LiquidLFM {
                 let last_token = *tokens.last().unwrap();
                 let input = Tensor::new(&[last_token], device)?.unsqueeze(0)?;
                 
-                let logits = model.forward(&input, current_pos - 1, &mut local_cache)?;
+                // Pass current_pos (not current_pos - 1) because we are processing the 
+                // token at current_pos that hasn't been processed by prefill yet.
+                let logits = model.forward(&input, current_pos, &mut local_cache)?;
                 let logits = logits.squeeze(0)?.squeeze(0)?;
                 
                 let next_token = logits.argmax(0)?.to_scalar::<u32>()?;
@@ -209,6 +216,7 @@ impl LiquidLFM {
         let max_tokens = max_new_tokens.unwrap_or(64);
         
         let inputs: Result<Vec<Vec<u32>>, _> = prompts.iter().map(|p| {
+            // Keep true for raw completion as user might expect BOS
             self.tokenizer.encode(p.clone(), true)
                 .map(|e| e.get_ids().to_vec())
                 .map_err(|e| candle_core::Error::Msg(e.to_string()))
@@ -238,7 +246,7 @@ impl LiquidLFM {
 
             let mut formatted_prompt = tmpl.render(minijinja::context! { 
                 messages => messages, 
-                bos_token => "<|im_start|>", 
+                bos_token => "", 
                 add_generation_prompt => true 
             }).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
@@ -246,9 +254,7 @@ impl LiquidLFM {
                 formatted_prompt.push_str("<think>\n</think>\n");
             }
 
-            // print the raw prompt
-            println!("Raw prompt:\n{}", formatted_prompt);
-
+            // Use `true` to ensure the BOS token ID (<|startoftext|>) is added automatically.
             let encoding = self.tokenizer.encode(formatted_prompt, true)
                 .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
             
@@ -261,6 +267,7 @@ impl LiquidLFM {
 
     // --- ASYNC/STATELESS API (GIL Released) ---
 
+    // Inside impl LiquidLFM
     #[pyo3(signature = (messages_py, max_new_tokens=None, ignore_thinking=false))]
     fn chat_stateless(&self, py: Python<'_>, messages_py: Vec<HashMap<String, String>>, max_new_tokens: Option<usize>, ignore_thinking: bool) -> PyResult<String> {
         let max_tokens = max_new_tokens.unwrap_or(64);
@@ -274,9 +281,10 @@ impl LiquidLFM {
         }).collect();
 
         let tmpl = self.env.get_template("chat").map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        
         let mut formatted_prompt = tmpl.render(minijinja::context! { 
             messages => messages, 
-            bos_token => "<|im_start|>", 
+            bos_token => "", 
             add_generation_prompt => true 
         }).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
@@ -284,9 +292,7 @@ impl LiquidLFM {
             formatted_prompt.push_str("<think>\n</think>\n");
         }
 
-        // print the raw prompt
-        println!("Raw prompt:\n{}", formatted_prompt);
-
+        // Use `true` to ensure the BOS token ID (<|startoftext|>) is added automatically.
         let encoding = self.tokenizer.encode(formatted_prompt, true).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
         let tokens = encoding.get_ids().to_vec();
 
@@ -301,16 +307,22 @@ impl LiquidLFM {
             let mut current_pos = 0;
             let mut local_tokens = tokens.clone();
 
-            for chunk in tokens.chunks(512) {
-                let input = Tensor::new(chunk, &device_ref)?.unsqueeze(0)?;
-                model_ref.forward(&input, current_pos, &mut local_cache)?;
-                current_pos += chunk.len();
+            // Prefill: Process all tokens except the last one
+            let prefill_len = local_tokens.len().saturating_sub(1);
+            if prefill_len > 0 {
+                for chunk in local_tokens[..prefill_len].chunks(512) {
+                    let input = Tensor::new(chunk, &device_ref)?.unsqueeze(0)?;
+                    model_ref.forward(&input, current_pos, &mut local_cache)?;
+                    current_pos += chunk.len();
+                }
             }
 
             for _ in 0..max_tokens {
                 let last = *local_tokens.last().unwrap();
                 let input = Tensor::new(&[last], &device_ref)?.unsqueeze(0)?;
-                let logits = model_ref.forward(&input, current_pos - 1, &mut local_cache)?.squeeze(0)?.squeeze(0)?;
+                
+                // Process the last token (or subsequently generated tokens)
+                let logits = model_ref.forward(&input, current_pos, &mut local_cache)?.squeeze(0)?.squeeze(0)?;
                 let next = logits.argmax(0)?.to_scalar::<u32>()?;
                 
                 local_tokens.push(next);
@@ -332,12 +344,18 @@ impl LiquidLFM {
         }).collect();
 
         let tmpl = self.env.get_template("chat").map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
-        let mut formatted_prompt = tmpl.render(minijinja::context! { messages => messages, bos_token => "<|im_start|>", add_generation_prompt => true }).unwrap();
+        
+        let mut formatted_prompt = tmpl.render(minijinja::context! { 
+            messages => messages, 
+            bos_token => "", 
+            add_generation_prompt => true 
+        }).unwrap();
         
         if ignore_thinking {
             formatted_prompt.push_str("<think>\n</think>\n");
         }
 
+        // Use `true` to ensure the BOS token ID (<|startoftext|>) is added automatically.
         let encoding = self.tokenizer.encode(formatted_prompt, true).map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
         let new_tokens = encoding.get_ids().to_vec();
         

@@ -49,6 +49,11 @@ jobs:
           manylinux: auto
           # This image contains CUDA 12.1 toolkit and NVCC
           docker-image: messense/manylinux2014-cuda:12.1
+        env:
+          # cudarc needs to find nvcc and cuda libraries
+          CUDA_PATH: /usr/local/cuda
+          CUDA_ROOT: /usr/local/cuda
+          PATH: /usr/local/cuda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
