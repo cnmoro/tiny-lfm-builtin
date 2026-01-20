@@ -103,37 +103,27 @@ jobs:
       
       - name: Patch CUDA host_config.h for MSVC compatibility
         run: |
-          # Determine CUDA path
           $cudaPath = $env:CUDA_PATH
-          if (-not $cudaPath) {
-            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1"
-          }
+          if (-not $cudaPath) { $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1" }
           $file = "$cudaPath\include\crt\host_config.h"
-
           if (-not (Test-Path $file)) {
-            Write-Error "CUDA header not found at expected path: $file"
+            Write-Error "CUDA host_config.h not found at $file"
             exit 1
           }
-
           $content = Get-Content $file
-          $originalLine = $content | Select-String -Pattern "_MSC_VER"
-          Write-Host "Before patch: $($originalLine.Line)"
-
-          # Patch the version check
           $updated = $content -replace '#if _MSC_VER < 1910 \|\| _MSC_VER > 1939', '#if _MSC_VER < 1910 || _MSC_VER > 1949'
           if ($updated -eq $content) {
-            $updated = $content -replace '(#if _MSC_VER < 1910 \|\| _MSC_VER > )(\d+)', '$11949'
+            $updated = $content -replace '(#if _MSC_VER < 1910 \|\| _MSC_VER > )\d+', '$11949'
           }
-
           $updated | Set-Content $file
-          $newLine = Get-Content $file | Select-String -Pattern "_MSC_VER"
-          Write-Host "After patch: $($newLine.Line)"
-          Write-Host "✅ Patch applied successfully."
+          Write-Host "✅ Patched CUDA host_config.h"
         shell: pwsh
-      
+
       - name: Show patched host_config.h
         run: |
-          Get-Content "C:\cuda\include\crt\host_config.h" | Select-String -Pattern "_MSC_VER"
+          $cudaPath = $env:CUDA_PATH
+          if (-not $cudaPath) { $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1" }
+          Get-Content "$cudaPath\include\crt\host_config.h" | Select-String -Pattern "_MSC_VER"
         shell: pwsh
 
       - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }})
