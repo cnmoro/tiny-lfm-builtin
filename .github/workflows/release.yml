@@ -134,7 +134,8 @@ jobs:
           sccache: 'true'
         env:
           CUDA_COMPUTE_CAP: ${{ matrix.cuda_compute_cap }}
-          CUDA_PATH: C:\cuda
+          CUDA_PATH: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1
+          CUDA_ROOT: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1
 
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
