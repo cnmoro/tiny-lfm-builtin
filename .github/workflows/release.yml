@@ -75,7 +75,7 @@ jobs:
           path: dist
 
   windows-cuda:
-    runs-on: windows-latest
+    runs-on: windows-2022
     strategy:
       matrix:
         cuda_compute_cap: ['80', '86', '89']
@@ -84,22 +84,34 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
+
       - uses: Jimver/cuda-toolkit@v0.2.16
         with:
           cuda: '12.1.0'
-      
+
       - uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
           vsversion: 2022
-      
-      - name: Verify MSVC is available
-        run: |
-          where cl
-          cl
+
+      - name: Verify MSVC
+        run: cl
         shell: cmd
-      
+
+      - name: Relax CUDA MSVC version check
+        run: |
+          $file = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\include\crt\host_config.h"
+          if (Test-Path $file) {
+            $content = Get-Content $file
+            $updated = $content -replace '#if _MSC_VER < 1910 \|\| _MSC_VER > 1939', '#if _MSC_VER < 1910 || _MSC_VER > 1949'
+            $updated | Set-Content $file
+            Write-Host "Patched host_config.h to allow newer MSVC"
+          } else {
+            Write-Error "CUDA host_config.h not found!"
+            exit 1
+          }
+        shell: pwsh
+
       - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }})
         uses: PyO3/maturin-action@v1
         with:
@@ -108,8 +120,7 @@ jobs:
           sccache: 'true'
         env:
           CUDA_COMPUTE_CAP: ${{ matrix.cuda_compute_cap }}
-          NVCC_FLAGS: "-allow-unsupported-compiler"
-      
+
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
         with:
