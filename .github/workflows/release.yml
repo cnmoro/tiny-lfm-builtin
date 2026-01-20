@@ -103,20 +103,32 @@ jobs:
       
       - name: Patch CUDA host_config.h for MSVC compatibility
         run: |
-          $file = "C:\cuda\include\crt\host_config.h"
+          # Determine CUDA path
+          $cudaPath = $env:CUDA_PATH
+          if (-not $cudaPath) {
+            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1"
+          }
+          $file = "$cudaPath\include\crt\host_config.h"
+
           if (-not (Test-Path $file)) {
-            Write-Error "CUDA host_config.h not found at $file"
-            dir "C:\cuda"
+            Write-Error "CUDA header not found at expected path: $file"
             exit 1
           }
+
           $content = Get-Content $file
+          $originalLine = $content | Select-String -Pattern "_MSC_VER"
+          Write-Host "Before patch: $($originalLine.Line)"
+
+          # Patch the version check
           $updated = $content -replace '#if _MSC_VER < 1910 \|\| _MSC_VER > 1939', '#if _MSC_VER < 1910 || _MSC_VER > 1949'
           if ($updated -eq $content) {
-            # Fallback: replace any number after '> '
-            $updated = $content -replace '(#if _MSC_VER < 1910 \|\| _MSC_VER > )\d+', '$11949'
+            $updated = $content -replace '(#if _MSC_VER < 1910 \|\| _MSC_VER > )(\d+)', '$11949'
           }
+
           $updated | Set-Content $file
-          Write-Host "✅ Successfully patched host_config.h"
+          $newLine = Get-Content $file | Select-String -Pattern "_MSC_VER"
+          Write-Host "After patch: $($newLine.Line)"
+          Write-Host "✅ Patch applied successfully."
         shell: pwsh
       
       - name: Show patched host_config.h
