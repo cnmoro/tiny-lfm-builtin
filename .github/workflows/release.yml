@@ -81,6 +81,7 @@ jobs:
         cuda_compute_cap: ['80', '86', '89']
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -94,22 +95,33 @@ jobs:
           arch: x64
           vsversion: 2022
 
-      - name: Verify MSVC
-        run: cl
-        shell: cmd
-
-      - name: Relax CUDA MSVC version check
+      - name: Verify nvcc and locate CUDA
         run: |
-          $file = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1\include\crt\host_config.h"
-          if (Test-Path $file) {
-            $content = Get-Content $file
-            $updated = $content -replace '#if _MSC_VER < 1910 \|\| _MSC_VER > 1939', '#if _MSC_VER < 1910 || _MSC_VER > 1949'
-            $updated | Set-Content $file
-            Write-Host "Patched host_config.h to allow newer MSVC"
-          } else {
-            Write-Error "CUDA host_config.h not found!"
+          where nvcc
+          nvcc --version
+        shell: cmd
+      
+      - name: Patch CUDA host_config.h for MSVC compatibility
+        run: |
+          $file = "C:\cuda\include\crt\host_config.h"
+          if (-not (Test-Path $file)) {
+            Write-Error "CUDA host_config.h not found at $file"
+            dir "C:\cuda"
             exit 1
           }
+          $content = Get-Content $file
+          $updated = $content -replace '#if _MSC_VER < 1910 \|\| _MSC_VER > 1939', '#if _MSC_VER < 1910 || _MSC_VER > 1949'
+          if ($updated -eq $content) {
+            # Fallback: replace any number after '> '
+            $updated = $content -replace '(#if _MSC_VER < 1910 \|\| _MSC_VER > )\d+', '$11949'
+          }
+          $updated | Set-Content $file
+          Write-Host "✅ Successfully patched host_config.h"
+        shell: pwsh
+      
+      - name: Show patched host_config.h
+        run: |
+          Get-Content "C:\cuda\include\crt\host_config.h" | Select-String -Pattern "_MSC_VER"
         shell: pwsh
 
       - name: Build CUDA wheels (SM${{ matrix.cuda_compute_cap }})
@@ -120,6 +132,7 @@ jobs:
           sccache: 'true'
         env:
           CUDA_COMPUTE_CAP: ${{ matrix.cuda_compute_cap }}
+          CUDA_PATH: C:\cuda
 
       - name: Upload CUDA wheels
         uses: actions/upload-artifact@v4
