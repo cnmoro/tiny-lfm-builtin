@@ -104,19 +104,30 @@ jobs:
       - name: Patch CUDA host_config.h for MSVC compatibility
         run: |
           $cudaPath = $env:CUDA_PATH
-          if (-not $cudaPath) { $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1" }
+          if (-not $cudaPath) {
+            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.1"
+          }
           $file = "$cudaPath\include\crt\host_config.h"
+
           if (-not (Test-Path $file)) {
-            Write-Error "CUDA host_config.h not found at $file"
+            Write-Error "CUDA header not found: $file"
             exit 1
           }
-          $content = Get-Content $file
-          $updated = $content -replace '#if _MSC_VER < 1910 \|\| _MSC_VER > 1939', '#if _MSC_VER < 1910 || _MSC_VER > 1949'
-          if ($updated -eq $content) {
-            $updated = $content -replace '(#if _MSC_VER < 1910 \|\| _MSC_VER > )\d+', '$11949'
+
+          # Read entire file as single string
+          $content = Get-Content $file -Raw
+
+          # Apply patch
+          $original = $content
+          $content = $content -replace '#if _MSC_VER < 1910 \|\| _MSC_VER > 1939', '#if _MSC_VER < 1910 || _MSC_VER > 1949'
+          if ($content -eq $original) {
+            $content = $content -replace '(#if _MSC_VER < 1910 \|\| _MSC_VER > )(\d+)', '$11949'
           }
-          $updated | Set-Content $file
-          Write-Host "✅ Patched CUDA host_config.h"
+
+          # Write back in ASCII (critical!)
+          Set-Content -Path $file -Value $content -Encoding ASCII
+
+          Write-Host "✅ Successfully patched host_config.h"
         shell: pwsh
 
       - name: Show patched host_config.h
