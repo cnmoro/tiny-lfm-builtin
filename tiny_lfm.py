@@ -10,7 +10,7 @@ class ModelType(str, Enum):
     M350 = "350M"
     B1_2 = "1.2B"
     B2_6 = "2.6B"
-    B8_A1 = "8B-A1"
+    B8_A1B = "8B-A1B"
 
 # Model Registry
 MODEL_REGISTRY = {
@@ -26,7 +26,7 @@ MODEL_REGISTRY = {
         "url": "https://huggingface.co/cnmoro/LFM-Q4-GGUFS/resolve/main/lfm2-2.6b-q4.gguf",
         "filename": "lfm2-2.6b-q4.gguf"
     },
-    ModelType.B8_A1: {
+    ModelType.B8_A1B: {
         "url": "https://huggingface.co/cnmoro/LFM-Q4-GGUFS/resolve/main/lfm2-8b-a1b-q4.gguf",
         "filename": "lfm2-8b-a1b-q4.gguf"
     }
